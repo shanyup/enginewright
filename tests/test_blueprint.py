@@ -45,6 +45,8 @@ info = c("blueprint_info", {"path": B})["data"]
 check("name clash -> NAME_IN_USE, nothing added", not r["ok"] and r["errorCode"] == "NAME_IN_USE" and not any(v["name"] == "Speed" for v in info["variables"]), r)
 r = c("blueprint_add_variables", {"path": B, "variables": [{"name": "Tint", "type": "colour"}]})
 check("bad variable type -> INVALID_TYPE", not r["ok"] and r["errorCode"] == "INVALID_TYPE", r)
+r = c("blueprint_add_variables", {"path": B, "variables": [{"name": "Kind2", "type": "enum:" + fx["enum"], "default": "Dsh"}]})
+check("bad enum default -> INVALID_VALUE with suggestion", not r["ok"] and r["errorCode"] == "INVALID_VALUE" and "Dish" in r.get("suggestions", []), r)
 check("blueprint_info: variables with type and category", any(v["name"] == "Health" and v["type"] == "float" and v["category"] == "Stats" for v in info["variables"])
       and any(v["name"] == "Labels" and v["type"] == "name[]" for v in info["variables"]), info)
 r = c("object_set", {"path": B, "classDefault": True, "values": {"Health": 75, "Kind": "Tool"}})

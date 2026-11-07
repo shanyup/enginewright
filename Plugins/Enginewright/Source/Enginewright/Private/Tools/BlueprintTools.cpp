@@ -430,6 +430,23 @@ void RegisterBlueprintTools(FEWRegistry& R)
 					return Bad(TEXT("NAME_IN_USE"), FString::Printf(TEXT("'%s' already exists on this Blueprint or its parent. Nothing was added."), *Name));
 				}
 				if (!EW::ParsePinType(Type, V.Type, TypeErr)) { return Bad(TEXT("INVALID_TYPE"), FString::Printf(TEXT("variables[%d] (%s): %s Nothing was added."), i, *Name, *TypeErr)); }
+				if (UEnum* Enum = Cast<UEnum>(V.Type.PinSubCategoryObject.Get()); Enum && !V.Default.IsEmpty() && V.Type.ContainerType == EPinContainerType::None)
+				{
+					// Pin defaults hold the internal enumerator name; accept the display name or the short name too.
+					FString Internal;
+					TArray<FString> Known;
+					for (int32 e = 0; e < Enum->NumEnums() - 1; ++e)
+					{
+						const FString Short = Enum->GetNameStringByIndex(e), Display = Enum->GetDisplayNameTextByIndex(e).ToString();
+						Known.Add(Display);
+						if (V.Default.Equals(Short, ESearchCase::IgnoreCase) || V.Default.Equals(Display, ESearchCase::IgnoreCase)) { Internal = Short; }
+					}
+					if (Internal.IsEmpty())
+					{
+						return FEWResult::Error(TEXT("INVALID_VALUE"), FString::Printf(TEXT("variables[%d] (%s): '%s' is not a value of %s. Nothing was added."), i, *Name, *V.Default, *Enum->GetName()), EW::Suggest(V.Default, Known));
+					}
+					V.Default = Internal;
+				}
 				Plan.Add(V);
 			}
 			for (const FVar& V : Plan)

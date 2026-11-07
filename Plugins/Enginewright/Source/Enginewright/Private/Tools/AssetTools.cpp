@@ -6,6 +6,8 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
 #include "FileHelpers.h"
+#include "HAL/FileManager.h"
+#include "Misc/Paths.h"
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
 #include "ObjectTools.h"
@@ -294,7 +296,22 @@ void RegisterAssetTools(FEWRegistry& R)
 			// Free the deleted packages now, so the same path can be created again in this session.
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			TArray<FString> Left;
-			for (const FString& Package : Set) { TArray<FAssetData> Still; Registry().GetAssetsByPackageName(FName(*Package), Still, false); if (Still.Num() > 0) { Left.Add(Package); } }
+			for (const FString& Package : Set)
+			{
+				TArray<FAssetData> Still;
+				Registry().GetAssetsByPackageName(FName(*Package), Still, false);
+				UPackage* StillLoaded = FindPackage(nullptr, *Package);
+				UObject* StillAsset = StillLoaded ? StaticFindObject(UObject::StaticClass(), StillLoaded, *FPackageName::GetShortName(Package)) : nullptr;
+				if (Still.Num() > 0 || IsValid(StillAsset)) { Left.Add(Package); continue; }
+				// The engine skips the file when its package-name cache says the package is gone (for example a
+				// package deleted and created again in this session). The package is unloaded here, so remove
+				// the leftover file ourselves; otherwise the path stays taken until the editor restarts.
+				FString File;
+				if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File))
+				{
+					if (!IFileManager::Get().Delete(*File, false, false, true)) { Left.Add(Package); }
+				}
+			}
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetNumberField(TEXT("deleted"), Deleted);
 			Data->SetArrayField(TEXT("stillThere"), ToJson(Left));
