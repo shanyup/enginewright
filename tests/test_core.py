@@ -47,8 +47,19 @@ check("remove_rows with one missing -> nothing removed", not r["ok"] and "AppleP
 # --- rename / delete safety
 r = c("asset_delete", {"paths": [T + "/BP_EWCopy"]})
 check("delete referenced -> refused with blocking list", not r["ok"] and r["errorCode"] == "ASSET_REFERENCED" and r["data"]["blocking"], r)
+# a name field that holds the asset name as text: a redirector cannot fix it, the rename must report it
+r = c("datatable_set_rows", {"path": T + "/DT_EW", "rows": {"Bread": {"DisplayName": "Bread", "ProcessedItemID": "BP_EWCopy"}}})
+check("row with the asset name as an ID", r["ok"], r)
+r = c("asset_rename", {"source": T + "/BP_EWCopy", "destination": T + "/BP_EWMoved", "dryRun": True})
+check("rename dryRun: lists referencer + text reference, renames nothing", r["ok"] and r["data"]["dryRun"]
+      and T + "/DT_EW" in r["data"]["referencersToUpdate"]
+      and any(h["asset"] == T + "/DT_EW" and h["value"] == "BP_EWCopy" for h in r["data"]["textReferences"])
+      and c("asset_exists", {"path": T + "/BP_EWCopy"})["data"]["exists"], r)
 r = c("asset_rename", {"source": T + "/BP_EWCopy", "destination": T + "/BP_EWMoved"})
+check("rename reports text it could not fix", r["ok"] and any(h["value"] == "BP_EWCopy" for h in r["data"]["textReferences"]) and r.get("warnings"), r)
 check("rename: new exists, old gone", r["ok"] and r["data"]["exists"] and not c("asset_exists", {"path": T + "/BP_EWCopy"})["data"]["exists"], r)
+r = c("datatable_remove_rows", {"path": T + "/DT_EW", "rows": ["Bread"]})
+check("remove the text-reference row again", r["ok"], r)
 r = c("datatable_get", {"path": T + "/DT_EW", "rows": ["Apple"], "fields": ["ItemClass"]})
 check("rename updated the DataTable soft reference", r["ok"] and "BP_EWMoved" in r["data"]["rows"]["Apple"]["ItemClass"], r)
 

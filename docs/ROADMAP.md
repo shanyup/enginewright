@@ -6,7 +6,7 @@ This is the current plan, not a promise. There are no dates. Order and scope can
 
 In-editor HTTP MCP server with token, three meta tools (`search`, `describe`, `call`), strict validation with read-back, object, asset, DataTable, level, editor, project settings and log tools, `doctor`, and atomic `batch` with rollback.
 
-## v0.2 (current)
+## v0.2 (done)
 
 - Prebuilt UE 5.8 Win64 zip (`tools/package.py`) and ready-to-paste client configs for Claude Code, Codex, Cursor, VS Code and Hermes (`client_config`).
 - Game camera screenshot and before/after screenshot (`screenshot`, `screenshot_ab`).
@@ -19,12 +19,12 @@ In-editor HTTP MCP server with token, three meta tools (`search`, `describe`, `c
 
 Tested on UE 5.8 Win64 only.
 
-## v0.3 (planned next)
+## v0.3 (current)
 
-- Safer rename: also report text and ID references to the old name (DataTable rows, string fields) that a redirector cannot fix.
-- Measuring helpers: size of a Blueprint or class (temporary spawn, bounds, automatic clean-up), trace grids.
-- Multiplayer tests on one machine: network emulation profiles and replication checks ("does client 2 see X").
-- UMG widgets and Gameplay Tags.
+- Done: safer rename (`asset_rename` reports text and ID references to the old name that a redirector cannot fix; `dryRun` preview).
+- Done: measuring helpers: `class_measure` (temporary spawn, bounds, automatic clean-up), `screen_coverage` (size on a player's screen).
+- Done: multiplayer tests on one machine: `pie_actors` (replication checks per world, waits for replication), `pie_net_emulation` (network emulation profiles).
+- Next: UMG widgets and Gameplay Tags.
 
 ## Later (not started)
 

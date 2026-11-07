@@ -61,13 +61,15 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Area | Tools |
 |---|---|
 | Objects | `object_get`, `object_set` |
-| Assets | `asset_find`, `asset_exists`, `asset_references`, `asset_duplicate`, `asset_rename` (updates referencers, removes the redirector), `asset_delete` (refuses assets still in use), `asset_save`, `asset_import` (texture, sound, font, mesh, while the editor is open) |
+| Assets | `asset_find`, `asset_exists`, `asset_references`, `asset_duplicate`, `asset_rename` (updates referencers, removes the redirector, reports text and IDs that still name the old asset; `dryRun` to preview), `asset_delete` (refuses assets still in use), `asset_save`, `asset_import` (texture, sound, font, mesh, while the editor is open) |
 | Types and data | `enum_create`, `struct_create`, `type_info`, `datatable_create`, `datatable_get`, `datatable_set_rows`, `datatable_remove_rows`, `datatable_rename_row` |
 | Blueprints | `blueprint_create`, `blueprint_info`, `blueprint_compile`, `blueprint_add_variables`, `blueprint_remove_variables`, `blueprint_add_component`, `blueprint_remove_component`, `blueprint_graph_read`, `blueprint_add_node`, `blueprint_connect`, `blueprint_set_pin`, `blueprint_remove_node` |
 | Materials, meshes, textures | `material_create`, `material_info`, `material_add_expression`, `material_connect`, `material_instance_create`, `material_instance_set`, `mesh_info`, `mesh_set_material`, `texture_info` |
 | Enhanced Input | `input_action_create`, `input_context_create`, `input_map`, `input_unmap`, `input_context_info` |
-| Level | `level_open`, `level_save`, `actor_find`, `actor_spawn`, `actor_set_transform`, `actor_delete`, `actor_bounds`, `world_trace` |
+| Level | `level_open`, `level_save`, `actor_find`, `actor_spawn`, `actor_set_transform`, `actor_delete`, `actor_bounds`, `world_trace`, `class_measure` (size of a class or Blueprint without placing it) |
 | Play In Editor | `pie_start` (1-4 players; standalone, listen or client; waits until every player has a pawn), `pie_stop`, `pie_state`, `pie_input` (synthetic Enhanced Input action or key per player), `screenshot` (what a player sees, or the editor viewport), `screenshot_ab` (same view before and after a change, with the share of changed pixels) |
+| Multiplayer | `pie_actors` (what the server and each client see: count, net roles, owner, property values; can wait for replication), `pie_net_emulation` (lag, loss, duplicates, reordering; profiles off / average / bad) |
+| Readability | `screen_coverage` (how big an actor looks from a player's camera: pixels and share of the screen) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
 | Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config` |

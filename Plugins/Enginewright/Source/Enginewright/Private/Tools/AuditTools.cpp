@@ -132,6 +132,11 @@ namespace
 	}
 }
 
+int32 EW::ScanContentText(const FString& Folder, int32 MaxAssets, TFunctionRef<void(const FString&, const FString&, const FString&, const FString&)> Visit)
+{
+	return ScanContent(Folder, MaxAssets, Visit);
+}
+
 void RegisterAuditTools(FEWRegistry& R)
 {
 	R.Register(TEXT("asset_search_text"),

@@ -211,10 +211,12 @@ void RegisterAssetTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("asset_rename"),
-		TEXT("Rename or move an asset. Every referencer is updated and the redirector left behind is fixed up and removed."),
+		TEXT("Rename or move an asset. Every referencer is updated and the redirector left behind is fixed up and removed. Also reports text that still names the old asset (strings, names, IDs, paths in DataTables, Blueprint defaults, data assets): a redirector cannot fix those. dryRun reports referencers and such text without renaming."),
 		TEXT(R"({"type":"object","properties":{
 			"source":{"type":"string"},
-			"destination":{"type":"string","description":"Full new path, e.g. /Game/Items/BP_Apple."}},
+			"destination":{"type":"string","description":"Full new path, e.g. /Game/Items/BP_Apple."},
+			"dryRun":{"type":"boolean","description":"Only report what would change (default false)."},
+			"textSearchFolder":{"type":"string","description":"Where to look for text naming the old asset; default /Game."}},
 			"required":["source","destination"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -226,6 +228,43 @@ void RegisterAssetTools(FEWRegistry& R)
 			const FString Dest = PackageOf(EW::Str(Args, TEXT("destination")));
 			if (AssetExists(Dest)) { return FEWResult::Error(TEXT("ASSET_EXISTS"), FString::Printf(TEXT("'%s' already exists."), *Dest)); }
 			const FString OldObjectPath = Obj->GetPathName();
+			const FString OldName = FPackageName::GetShortName(Old);
+			FString TextFolder = EW::Str(Args, TEXT("textSearchFolder"));
+			if (TextFolder.IsEmpty()) { TextFolder = TEXT("/Game"); }
+			// Text that names the old asset: the bare name (IDs, row keys) or its path inside a plain string.
+			// Real asset references are excluded: the rename fixes those.
+			auto TextRefs = [&Old, &OldName, &TextFolder](bool bAfterRename) -> TArray<TSharedPtr<FJsonValue>>
+			{
+				TArray<TSharedPtr<FJsonValue>> Out;
+				EW::ScanContentText(TextFolder, 5000, [&](const FString& A, const FString& W, const FString& F, const FString& V)
+				{
+					if (Out.Num() >= 200 || A == Old) { return; }
+					const bool bName = V.Equals(OldName, ESearchCase::IgnoreCase);
+					const bool bPath = bAfterRename && (V.Equals(Old) || V.StartsWith(Old + TEXT(".")));
+					if (!bName && !bPath) { return; }
+					TSharedRef<FJsonObject> H = MakeShared<FJsonObject>();
+					H->SetStringField(TEXT("asset"), A);
+					H->SetStringField(TEXT("where"), W);
+					H->SetStringField(TEXT("field"), F);
+					H->SetStringField(TEXT("value"), V);
+					Out.Add(MakeShared<FJsonValueObject>(H));
+				});
+				return Out;
+			};
+
+			if (EW::Bool(Args, TEXT("dryRun"), false))
+			{
+				TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+				Data->SetBoolField(TEXT("dryRun"), true);
+				Data->SetStringField(TEXT("from"), Old);
+				Data->SetStringField(TEXT("to"), Dest);
+				Data->SetArrayField(TEXT("referencersToUpdate"), ToJson(Referencers(Old)));
+				const TArray<TSharedPtr<FJsonValue>> Text = TextRefs(false);
+				Data->SetArrayField(TEXT("textReferences"), Text);
+				FEWResult Res = FEWResult::Ok(Data, TEXT("Nothing was renamed."));
+				if (Text.Num()) { Res.Warnings.Add(FString::Printf(TEXT("%d text value(s) name '%s'; the rename will not change them."), Text.Num(), *OldName)); }
+				return Res;
+			}
 
 			TArray<FAssetRenameData> Renames;
 			Renames.Emplace(Obj, FPackageName::GetLongPackagePath(Dest), FPackageName::GetShortName(Dest));
@@ -245,15 +284,18 @@ void RegisterAssetTools(FEWRegistry& R)
 				// Referencers are fixed and the redirector is gone: forget the in-session path redirection too, so a
 				// new asset created later at the old path is not silently redirected to the moved one.
 				const FString OldPkg = FPackageName::ObjectPathToPackageName(OldObjectPath);
-				const FString OldName = FPackageName::GetShortName(OldPkg);
-				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName));
-				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName + TEXT("_C")));
+				const FString OldShort = FPackageName::GetShortName(OldPkg);
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldShort));
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldShort + TEXT("_C")));
 			}
 
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("path"), Dest);
 			Data->SetBoolField(TEXT("exists"), AssetExists(Dest));
 			Data->SetArrayField(TEXT("referencersUpdated"), ToJson(Referencers(Dest)));
+			const TArray<TSharedPtr<FJsonValue>> Text = TextRefs(true);
+			Data->SetArrayField(TEXT("textReferences"), Text);
+			if (Text.Num()) { Res.Warnings.Add(FString::Printf(TEXT("%d text value(s) still name the old asset (see textReferences); update them by hand."), Text.Num())); }
 			Res.Data = Data;
 			return Res;
 		}, /*bTransactional*/ false);

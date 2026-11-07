@@ -31,6 +31,8 @@ void RegisterImportTools(FEWRegistry& R);
 void RegisterInputTools(FEWRegistry& R);
 void RegisterValidationTools(FEWRegistry& R);
 void RegisterAuditTools(FEWRegistry& R);
+void RegisterMultiplayerTools(FEWRegistry& R);
+void RegisterMeasureTools(FEWRegistry& R);
 namespace EW
 {
 	void InstallLogCapture();
@@ -122,6 +124,8 @@ void FEnginewrightModule::StartupModule()
 	RegisterInputTools(Reg);
 	RegisterValidationTools(Reg);
 	RegisterAuditTools(Reg);
+	RegisterMultiplayerTools(Reg);
+	RegisterMeasureTools(Reg);
 
 	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
 	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }

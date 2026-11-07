@@ -29,3 +29,6 @@ dist/
 *.user
 .DS_Store
 Thumbs.db
+
+# Default stub that UAT BuildPlugin writes
+Plugins/Enginewright/Config/FilterPlugin.ini
