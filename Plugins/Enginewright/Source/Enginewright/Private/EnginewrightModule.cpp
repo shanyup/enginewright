@@ -36,6 +36,7 @@ void RegisterMeasureTools(FEWRegistry& R);
 void RegisterUMGTools(FEWRegistry& R);
 void RegisterGameplayTagTools(FEWRegistry& R);
 void RegisterUIRuntimeTools(FEWRegistry& R);
+void RegisterLocalizationTools(FEWRegistry& R);
 namespace EW
 {
 	void InstallLogCapture();
@@ -132,6 +133,7 @@ void FEnginewrightModule::StartupModule()
 	RegisterUMGTools(Reg);
 	RegisterGameplayTagTools(Reg);
 	RegisterUIRuntimeTools(Reg);
+	RegisterLocalizationTools(Reg);
 
 	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
 	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }
