@@ -10,6 +10,7 @@
 #include "Misc/Paths.h"
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
+#include "Misc/RedirectCollector.h"
 #include "ObjectTools.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
@@ -239,6 +240,15 @@ void RegisterAssetTools(FEWRegistry& R)
 				Tools().FixupReferencers({ Redirector }, /*bCheckoutDialogPrompt*/ false);
 			}
 			if (AssetExists(Old)) { Res.Warnings.Add(TEXT("A redirector is still at the old path; something could not be fixed up.")); }
+			else
+			{
+				// Referencers are fixed and the redirector is gone: forget the in-session path redirection too, so a
+				// new asset created later at the old path is not silently redirected to the moved one.
+				const FString OldPkg = FPackageName::ObjectPathToPackageName(OldObjectPath);
+				const FString OldName = FPackageName::GetShortName(OldPkg);
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName));
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName + TEXT("_C")));
+			}
 
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("path"), Dest);
@@ -302,6 +312,17 @@ void RegisterAssetTools(FEWRegistry& R)
 				Registry().GetAssetsByPackageName(FName(*Package), Still, false);
 				UPackage* StillLoaded = FindPackage(nullptr, *Package);
 				UObject* StillAsset = StillLoaded ? StaticFindObject(UObject::StaticClass(), StillLoaded, *FPackageName::GetShortName(Package)) : nullptr;
+				FString PkgFile;
+				const bool bFileThere = FPackageName::TryConvertLongPackageNameToFilename(Package, PkgFile, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(PkgFile);
+				if (Still.Num() == 0 && !bFileThere && IsValid(StillAsset))
+				{
+					// Deleted from the registry and from disk, but something (undo buffer, an open tool) still holds the
+					// object. Move it out of the way so the path is really free again.
+					StillAsset->Rename(*MakeUniqueObjectName(GetTransientPackage(), StillAsset->GetClass(), FName(*(TEXT("EWDeleted_") + StillAsset->GetName()))).ToString(),
+						GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+					StillAsset->MarkAsGarbage();
+					StillAsset = nullptr;
+				}
 				if (Still.Num() > 0 || IsValid(StillAsset)) { Left.Add(Package); continue; }
 				// The engine skips the file when its package-name cache says the package is gone (for example a
 				// package deleted and created again in this session). The package is unloaded here, so remove
