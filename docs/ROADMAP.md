@@ -26,7 +26,8 @@ Tested on UE 5.8 Win64 only.
 - Done: multiplayer tests on one machine: `pie_actors` (replication checks per world, waits for replication), `pie_net_emulation` (network emulation profiles).
 - Done: UMG widgets (create, tree, add / set / remove with slot layout, render to PNG) and Gameplay Tags (list, add, remove).
 - Done: runtime UI with CommonUI support: `ui_state` (activatable widgets and stacks, buttons), `ui_click`, `ui_open`, `ui_close`; CommonUI assets (activatable pages, CommonButtonBase, text / button styles) are built with the Blueprint and widget tools.
-- Next: CommonUI input action bindings check, push a page onto a running stack; MVVM.
+- Done: CommonUI input: `ui_input_audit` (input action wiring checks), `ui_open` with `stack` (push onto a running activatable stack, `ui_close` pops it), `ui_input_type` (switch input type); `object_set` on class defaults also updates placed instances and widget templates that still had the old default.
+- Next: MVVM.
 
 ## Later (not started)
 

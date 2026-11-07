@@ -2,6 +2,8 @@
 #include "EWCommon.h"
 #include "EWProps.h"
 
+#include "Engine/Blueprint.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
 
@@ -61,6 +63,24 @@ void RegisterObjectTools(FEWRegistry& R)
 			const TSharedPtr<FJsonObject>* Values = nullptr;
 			Args->TryGetObjectField(TEXT("values"), Values);
 
+			// Class defaults: remember which archetype instances (placed actors, widget templates in other
+			// Blueprints) still hold the old default, so they follow the new one like the Details panel does.
+			const bool bIsCDO = Obj->HasAnyFlags(RF_ClassDefaultObject);
+			TArray<TPair<UObject*, FProperty*>> Followers;
+			if (bIsCDO && Values && Values->IsValid())
+			{
+				TArray<UObject*> Instances;
+				Obj->GetArchetypeInstances(Instances);
+				for (const TPair<FString, TSharedPtr<FJsonValue>>& KV : (*Values)->Values)
+				{
+					FProperty* P = EW::FindPropertyLoose(Obj->GetClass(), KV.Key);
+					if (!P) { continue; }
+					for (UObject* I : Instances)
+					{
+						if (IsValid(I) && I->GetClass()->IsChildOf(P->GetOwnerClass()) && P->Identical_InContainer(I, Obj)) { Followers.Emplace(I, P); }
+					}
+				}
+			}
 			FScopedTransaction Tx(FText::FromString(TEXT("Enginewright object_set")));
 			FEWResult Res = EW::WriteValues(Obj->GetClass(), Obj, Obj, Values ? *Values : nullptr);
 			if (!Res.bOk)
@@ -69,6 +89,21 @@ void RegisterObjectTools(FEWRegistry& R)
 				return Res;
 			}
 
+			TSet<UPackage*> FollowerPackages;
+			for (const TPair<UObject*, FProperty*>& F : Followers)
+			{
+				F.Key->Modify();
+				F.Value->CopyCompleteValue_InContainer(F.Key, Obj);
+				FPropertyChangedEvent Ev(F.Value);
+				F.Key->PostEditChangeProperty(Ev);
+				if (!F.Key->GetOutermost()->HasAnyFlags(RF_Transient)) { FollowerPackages.Add(F.Key->GetOutermost()); }
+			}
+			if (bIsCDO)
+			{
+				if (UBlueprint* BP = Cast<UBlueprint>(Obj->GetClass()->ClassGeneratedBy)) { FBlueprintEditorUtils::MarkBlueprintAsModified(BP); }
+				if (Followers.Num()) { Res.Data->SetNumberField(TEXT("instancesUpdated"), Followers.Num()); }
+			}
+			for (UPackage* FP : FollowerPackages) { FP->MarkPackageDirty(); }
 			Obj->MarkPackageDirty();
 			bool bSaved = false, bDeferred = false;
 			if (bSave)

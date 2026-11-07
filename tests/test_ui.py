@@ -4,14 +4,15 @@ built with the generic tools (text/button style Blueprints, activatable page, Co
 Needs a running editor on ENGINEWRIGHT_TEST_PROJECT with the CommonUI plugin enabled (the CommonUI part is skipped
 with a FAIL line that says so when it is not). Writes only under /Game/_EWTest.
 """
-import os, sys
+import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ewtest import ROOT, call as c, check, delete_if_exists, done, ensure_stopped
 
 ensure_stopped()
 CLICK, PAGE, CBTN, HOST = ROOT + "/WBP_EWClick", ROOT + "/WBP_EWPage", ROOT + "/WBP_EWCButton", ROOT + "/WBP_EWHost"
 CTS, CBS = ROOT + "/CTS_EWText", ROOT + "/CBS_EWButton"
-delete_if_exists(HOST, PAGE, CBTN, CLICK, CTS, CBS)
+AUDIT, IA, DT = ROOT + "/WBP_EWAudit", ROOT + "/IA_EWUiConfirm", ROOT + "/DT_EWUiActions"
+delete_if_exists(HOST, PAGE, AUDIT, CBTN, CLICK, CTS, CBS, IA, DT)
 
 
 def ok(r, label):
@@ -44,11 +45,36 @@ if common["ok"]:
     check("CommonUI: activatable page", r["ok"], r)
     r = c("widget_add", {"path": PAGE, "class": CBTN + ".WBP_EWCButton_C", "name": "GoButton", "properties": {"bSelectable": True, "bToggleable": True}})
     check("CommonUI: CommonButtonBase in a page, made toggleable", r["ok"], r)
+    ok(c("widget_add", {"path": PAGE, "class": CBTN + ".WBP_EWCButton_C", "name": "Go2"}), "second CommonButtonBase")
+    r = c("object_set", {"path": CBTN, "classDefault": True, "values": {"bSelectable": True}})
+    g2 = c("widget_get", {"path": PAGE, "name": "Go2", "properties": ["bSelectable"]})
+    check("object_set on class defaults reaches existing templates in other Blueprints", r["ok"] and r["data"].get("instancesUpdated", 0) >= 1
+          and g2["ok"] and g2["data"]["values"]["bSelectable"] is True, [r, g2])
     ok(c("widget_add", {"path": PAGE, "class": "Button", "name": "NextButton"}), "next")
     ok(c("widget_add", {"path": PAGE, "class": "TextBlock", "name": "NextLabel", "parent": "NextButton", "properties": {"Text": "Next"}}), "next label")
     r = c("widget_create", {"path": HOST, "root": "Overlay"})
     r2 = c("widget_add", {"path": HOST, "class": "CommonActivatableWidgetStack", "name": "Stack"}) if r["ok"] else r
     check("CommonUI: host with an activatable stack", r2["ok"], r2)
+
+    # --- input wiring audit (separate widget, never opened in PIE)
+    ok(c("input_action_create", {"path": IA}), "input action")
+    dt = c("datatable_create", {"path": DT, "rowStruct": "CommonInputActionDataBase"})
+    check("CommonUI: DataTable of CommonInputActionDataBase rows", dt["ok"], dt)
+    ok(c("widget_create", {"path": AUDIT, "root": "VerticalBox"}), "audit widget")
+    ok(c("widget_add", {"path": AUDIT, "class": CBTN + ".WBP_EWCButton_C", "name": "Confirm1", "properties": {"TriggeringEnhancedInputAction": IA}}), "confirm1")
+    ok(c("widget_add", {"path": AUDIT, "class": CBTN + ".WBP_EWCButton_C", "name": "Confirm2", "properties": {"TriggeringEnhancedInputAction": IA}}), "confirm2")
+    r = c("widget_add", {"path": AUDIT, "class": CBTN + ".WBP_EWCButton_C", "name": "RowBtn", "properties": {"TriggeringInputAction": {"DataTable": DT, "RowName": "Confirm"}}})
+    check("CommonUI: button with a DataTable input action row", r["ok"], r)
+    a = c("ui_input_audit", {"path": ROOT})
+    issues = (a.get("data") or {}).get("issues", [])
+    got = {(i["code"], i.get("widget")) for i in issues if i["asset"].endswith("WBP_EWAudit")}
+    check("ui_input_audit: Enhanced Input action on a button while support is off", a["ok"] and (a["data"]["enhancedInputSupport"] or ("ENHANCED_INPUT_OFF", "Confirm1") in got), issues)
+    check("ui_input_audit: two buttons with the same action -> DUPLICATE_ACTION", ("DUPLICATE_ACTION", "Confirm2") in got, issues)
+    check("ui_input_audit: missing DataTable row -> ROW_MISSING", ("ROW_MISSING", "RowBtn") in got, issues)
+    check("ui_input_audit: reports the CommonUI input data setting", a["ok"] and (a["data"]["inputDataSet"] or any(i["code"] == "NO_INPUT_DATA" for i in issues))
+          and a["data"]["commonButtons"] >= 5, a.get("data"))
+    r = c("ui_input_audit", {"path": "Game/UI"})
+    check("ui_input_audit bad path -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 else:
     check("CommonUI plugin is enabled in the test project (CommonUI checks skipped)", False, common)
 
@@ -90,22 +116,45 @@ if common["ok"]:
     check("CommonUI: ui_state reports the activated page", d.get("commonUI") and any(a["class"].startswith("WBP_EWPage") and a["activated"] for a in d.get("activatableWidgets", [])), d)
     labels = {b["label"]: b for b in d.get("buttons", [])}
     check("CommonUI: CommonButtonBase listed once with its label", "Go" in labels and labels["Go"]["class"].startswith("WBP_EWCButton")
-          and sum(1 for b in d.get("buttons", []) if b["label"] == "Go") == 1, d.get("buttons"))
-    r = c("ui_click", {"button": "Go"})
+          and sum(1 for b in d.get("buttons", []) if b["name"] == "GoButton") == 1, d.get("buttons"))
+    r = c("ui_click", {"button": "GoButton"})
     go = [b for b in (r.get("data") or {}).get("buttons", []) if b["name"] == "GoButton"]
     check("CommonUI: click a CommonButtonBase (toggle is now selected)", r["ok"] and r["data"]["clicked"]["name"] == "GoButton" and go and go[0].get("selected") is True, r)
-    r = c("ui_click", {"button": "Go", "method": "event"})
+    r = c("ui_click", {"button": "GoButton", "method": "event"})
     go = [b for b in (r.get("data") or {}).get("buttons", []) if b["name"] == "GoButton"]
     check("CommonUI: event click toggles it back", r["ok"] and go and go[0].get("selected") is False, r)
     c("ui_close", {"widget": "WBP_EWPage"})
     r = c("ui_open", {"class": HOST})
     st = (c("ui_state").get("data") or {}).get("stacks", [])
     check("CommonUI: ui_state lists the activatable stack", r["ok"] and any(s["name"] == "Stack" and s["widgets"] == [] for s in st), st)
+    r = c("ui_open", {"class": PAGE, "stack": "Stack"})
+    check("CommonUI: ui_open with stack pushes and activates the page", r["ok"] and r["data"]["stackSize"] == 1 and r["data"]["activated"], r)
+    d = c("ui_state").get("data") or {}
+    check("CommonUI: the stack's top is the pushed page", any(s["name"] == "Stack" and s.get("top", "").startswith("WBP_EWPage") for s in d.get("stacks", [])), d.get("stacks"))
+    check("CommonUI: pushed page's buttons are listed", any(b["name"] == "GoButton" for b in d.get("buttons", [])), d.get("buttons"))
+    r = c("ui_open", {"class": PAGE, "stack": "NoSuchStack"})
+    check("ui_open unknown stack -> STACK_NOT_FOUND", not r["ok"] and r["errorCode"] == "STACK_NOT_FOUND", r)
+    r = c("ui_open", {"class": CLICK, "stack": "Stack"})
+    check("ui_open non-activatable onto a stack -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+    r = c("ui_input_type")
+    check("ui_input_type reads the current type", r["ok"] and r["data"]["inputType"] in ("MouseAndKeyboard", "Gamepad", "Touch") and d.get("inputType") == r["data"]["inputType"], [r, d.get("inputType")])
+    r = c("ui_input_type", {"type": "Gamepad"})
+    check("ui_input_type switches to Gamepad (read back)", r["ok"] and r["data"]["inputType"] == "Gamepad", r)
+    check("ui_state reports Gamepad", (c("ui_state").get("data") or {}).get("inputType") == "Gamepad")
+    r = c("ui_input_type", {"type": "MouseAndKeyboard"})
+    check("ui_input_type back to MouseAndKeyboard", r["ok"] and r["data"]["inputType"] == "MouseAndKeyboard" and r["data"]["before"] == "Gamepad", r)
+    r = c("ui_input_type", {"type": "Joystick"})
+    check("ui_input_type bad type -> error", not r["ok"] and r["errorCode"] in ("INVALID_ARGUMENT", "SCHEMA"), r)
+    r = c("ui_close", {"widget": "WBP_EWPage"})
+    check("CommonUI: ui_close removes a page from its stack", r["ok"], r)
+    time.sleep(1.0)
+    st = (c("ui_state").get("data") or {}).get("stacks", [])
+    check("CommonUI: the stack is empty again", any(s["name"] == "Stack" and s["widgets"] == [] for s in st), st)
     c("ui_close", {"widget": "WBP_EWHost"})
 r = c("ui_open", {"class": "StaticMeshActor"})
 check("ui_open non-widget -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 c("pie_stop")
 
 if not os.environ.get("EW_KEEP_FIXTURES"):
-    delete_if_exists(HOST, PAGE, CBTN, CLICK, CTS, CBS)
+    delete_if_exists(HOST, PAGE, AUDIT, CBTN, CLICK, CTS, CBS, IA, DT)
 done()
