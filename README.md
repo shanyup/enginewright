@@ -71,6 +71,7 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Multiplayer | `pie_actors` (what the server and each client see: count, net roles, owner, property values; can wait for replication), `pie_net_emulation` (lag, loss, duplicates, reordering; profiles off / average / bad) |
 | Readability | `screen_coverage` (how big an actor looks from a player's camera: pixels and share of the screen) |
 | UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (Widget Blueprint to PNG at any resolution, no Play In Editor) |
+| Runtime UI (UMG + CommonUI) | `ui_state` (widgets in a player's viewport, CommonUI activatable widgets and stacks, visible buttons with label, selected state and rectangle), `ui_click` (by name or label; refuses a covered button, or fires the click directly), `ui_open` / `ui_close` (show one screen in Play In Editor). CommonUI is optional: it is used when the project has it. |
 | Gameplay Tags | `gameplay_tags_list`, `gameplay_tag_add` (to a tag ini, strict names), `gameplay_tag_remove` (refused while assets use the tag) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
@@ -79,7 +80,7 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 
 ## Running the tests
 
-The tests in `tests/` are plain Python 3 scripts (standard library only). They talk to a running editor. Use a separate, empty test project: the suites create and delete assets under `/Game/_EWTest` and add (then remove) actors in the open level. They create their own fixtures, so a new blank project works.
+The tests in `tests/` are plain Python 3 scripts (standard library only). They talk to a running editor. Use a separate, empty test project: the suites create and delete assets under `/Game/_EWTest` and add (then remove) actors in the open level. They create their own fixtures, so a new blank project works. Enable the CommonUI plugin in the test project for the CommonUI checks of the `ui` suite.
 
 ```bash
 # bash / zsh

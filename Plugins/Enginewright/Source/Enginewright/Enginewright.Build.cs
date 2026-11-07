@@ -5,6 +5,8 @@ public class Enginewright : ModuleRules
 	public Enginewright(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		// Each tool file keeps small helpers (Bad, Registry, ...) in an anonymous namespace; unity builds would merge them.
+		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

@@ -6,7 +6,7 @@ Exit code 0 only when every suite passed.
 import os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ORDER = ["smoke", "core", "blueprint", "assets", "input", "pie", "measure", "multiplayer", "umg", "tags", "audit", "build"]
+ORDER = ["smoke", "core", "blueprint", "assets", "input", "pie", "measure", "multiplayer", "umg", "tags", "ui", "audit", "build"]
 
 
 def suites():
@@ -21,7 +21,7 @@ def main():
     for s in wanted:
         path = os.path.join(HERE, "smoke.py" if s == "smoke" else f"test_{s}.py")
         t0 = time.time()
-        p = subprocess.run([sys.executable, path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run([sys.executable, path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1200)
         m = re.search(r"(\d+)/(\d+) passed", p.stdout)
         ok = p.returncode == 0
         failed += not ok

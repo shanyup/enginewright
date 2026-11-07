@@ -215,10 +215,15 @@ void RegisterUMGTools(FEWRegistry& R)
 			if (OldRoot && OldRoot->GetClass() != Root)
 			{
 				WB->WidgetTree->RemoveWidget(OldRoot);
+				WB->OnVariableRemoved(OldRoot->GetFName());
 				OldRoot->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
 				WB->WidgetTree->RootWidget = nullptr;
 			}
-			if (Root && !WB->WidgetTree->RootWidget) { WB->WidgetTree->RootWidget = WB->WidgetTree->ConstructWidget<UWidget>(Root); }
+			if (Root && !WB->WidgetTree->RootWidget)
+			{
+				WB->WidgetTree->RootWidget = WB->WidgetTree->ConstructWidget<UWidget>(Root);
+				WB->OnVariableAdded(WB->WidgetTree->RootWidget->GetFName());
+			}
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("path"), WB->GetPathName());
 			Data->SetStringField(TEXT("root"), WB->WidgetTree && WB->WidgetTree->RootWidget ? WB->WidgetTree->RootWidget->GetName() : FString());
@@ -319,7 +324,8 @@ void RegisterUMGTools(FEWRegistry& R)
 			UWidget* W = WB->WidgetTree->ConstructWidget<UWidget>(C, FName(*Name));
 			if (!W) { return Bad(TEXT("CREATE_FAILED"), TEXT("The widget could not be constructed.")); }
 			W->bIsVariable = EW::Bool(Args, TEXT("isVariable"), true);
-			auto Undo = [&]() { WB->WidgetTree->RemoveWidget(W); W->Rename(nullptr, GetTransientPackage()); };
+			WB->OnVariableAdded(W->GetFName());
+			auto Undo = [&]() { WB->WidgetTree->RemoveWidget(W); WB->OnVariableRemoved(W->GetFName()); W->Rename(nullptr, GetTransientPackage()); };
 			if (Props && (*Props)->Values.Num())
 			{
 				FEWResult PR = EW::WriteValues(C, W, W, *Props);
@@ -416,7 +422,7 @@ void RegisterUMGTools(FEWRegistry& R)
 			WB->Modify();
 			WB->WidgetTree->Modify();
 			if (!WB->WidgetTree->RemoveWidget(W)) { return Bad(TEXT("REMOVE_FAILED"), TEXT("The widget could not be removed.")); }
-			for (UWidget* G : Gone) { G->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional); }
+			for (UWidget* G : Gone) { WB->OnVariableRemoved(G->GetFName()); G->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional); }
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetArrayField(TEXT("removed"), Names);
 			Data->SetNumberField(TEXT("widgetsLeft"), WidgetNames(WB).Num());

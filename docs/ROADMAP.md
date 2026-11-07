@@ -25,7 +25,8 @@ Tested on UE 5.8 Win64 only.
 - Done: measuring helpers: `class_measure` (temporary spawn, bounds, automatic clean-up), `screen_coverage` (size on a player's screen).
 - Done: multiplayer tests on one machine: `pie_actors` (replication checks per world, waits for replication), `pie_net_emulation` (network emulation profiles).
 - Done: UMG widgets (create, tree, add / set / remove with slot layout, render to PNG) and Gameplay Tags (list, add, remove).
-- Next: CommonUI: activatable widgets, CommonButtonBase, text and button style assets, input action bindings; read the active CommonUI screen stack in Play In Editor and click a button; screenshot checks.
+- Done: runtime UI with CommonUI support: `ui_state` (activatable widgets and stacks, buttons), `ui_click`, `ui_open`, `ui_close`; CommonUI assets (activatable pages, CommonButtonBase, text / button styles) are built with the Blueprint and widget tools.
+- Next: CommonUI input action bindings check, push a page onto a running stack; MVVM.
 
 ## Later (not started)
 
