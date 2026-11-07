@@ -14,12 +14,16 @@ public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
+	/** Server URL and token, for the client config tool. */
+	FString GetUrl() const;
+	const FString& GetToken() const { return Token; }
+
 private:
 	bool HandlePost(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
-	/** Returns the JSON-RPC reply, or an empty string for a notification. */
-	FString HandleRpc(const TSharedPtr<FJsonObject>& Msg);
+	/** Calls Reply with the JSON-RPC reply, or an empty string for a notification. */
+	void HandleRpc(const TSharedPtr<FJsonObject>& Msg, TFunction<void(const FString&)> Reply);
 	TSharedRef<FJsonObject> ToolsList() const;
-	TSharedRef<FJsonObject> CallTool(const FString& Name, const TSharedPtr<FJsonObject>& Args) const;
+	void CallTool(const FString& Name, const TSharedPtr<FJsonObject>& Args, TFunction<void(TSharedRef<FJsonObject>)> Done) const;
 
 	TSharedPtr<IHttpRouter> Router;
 	TArray<FHttpRouteHandle> Routes;

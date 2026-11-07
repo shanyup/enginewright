@@ -1,6 +1,8 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
 #include "EWProps.h"
+#include "EWTypes.h"
+#include "StructUtils/UserDefinedStruct.h"
 
 #include "AssetToolsModule.h"
 #include "DataTableEditorUtils.h"
@@ -40,13 +42,8 @@ namespace
 
 	const UScriptStruct* FindRowStruct(const FString& In)
 	{
-		if (In.StartsWith(TEXT("/")))
-		{
-			return FindObject<UScriptStruct>(nullptr, *In);
-		}
-		FString Name = In;
-		if (Name.StartsWith(TEXT("F")) && !FindFirstObject<UScriptStruct>(*Name, EFindFirstObjectOptions::None)) { Name.RightChopInline(1); }
-		return FindFirstObject<UScriptStruct>(*Name, EFindFirstObjectOptions::None);
+		FString Err;
+		return EW::FindStruct(In, Err);
 	}
 
 	FEWResult SaveTable(UDataTable* DT, bool bSave, FEWResult Res)
@@ -67,7 +64,7 @@ namespace
 void RegisterDataTableTools(FEWRegistry& R)
 {
 	R.Register(TEXT("datatable_create"),
-		TEXT("Create a DataTable for a row struct (C++ struct derived from FTableRowBase, or a path /Script/Module.Struct)."),
+		TEXT("Create a DataTable for a row struct (a C++ struct derived from FTableRowBase, a Blueprint struct asset path, or /Script/Module.Struct)."),
 		TEXT(R"({"type":"object","properties":{
 			"path":{"type":"string","description":"New asset path, e.g. /Game/Data/DT_Items."},
 			"rowStruct":{"type":"string","description":"ItemDefinition, FItemDefinition or /Script/MyGame.ItemDefinition."}},
@@ -77,9 +74,9 @@ void RegisterDataTableTools(FEWRegistry& R)
 		{
 			const FString Path = EW::Str(Args, TEXT("path"));
 			const UScriptStruct* RS = FindRowStruct(EW::Str(Args, TEXT("rowStruct")));
-			if (!RS || !RS->IsChildOf(FTableRowBase::StaticStruct()))
+			if (!RS || !(RS->IsChildOf(FTableRowBase::StaticStruct()) || RS->IsA<UUserDefinedStruct>()))
 			{
-				return FEWResult::Error(TEXT("UNKNOWN_ROW_STRUCT"), FString::Printf(TEXT("'%s' is not a struct derived from FTableRowBase."), *EW::Str(Args, TEXT("rowStruct"))));
+				return FEWResult::Error(TEXT("UNKNOWN_ROW_STRUCT"), FString::Printf(TEXT("'%s' is not a Blueprint struct or a C++ struct derived from FTableRowBase."), *EW::Str(Args, TEXT("rowStruct"))));
 			}
 			if (FPackageName::DoesPackageExist(Path)) { return FEWResult::Error(TEXT("ASSET_EXISTS"), FString::Printf(TEXT("'%s' already exists."), *Path)); }
 			UDataTableFactory* Factory = NewObject<UDataTableFactory>();

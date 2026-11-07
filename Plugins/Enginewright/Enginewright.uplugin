@@ -1,11 +1,13 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "0.1.0-dev",
+  "Version": 2,
+  "VersionName": "0.2.0",
   "FriendlyName": "Enginewright",
   "Description": "Native MCP server inside the Unreal Editor. No Python, Node or proxy. Strict, verified edits.",
   "Category": "Editor",
   "CreatedBy": "Shanyup Studios",
+  "CreatedByURL": "https://github.com/shanyup/enginewright",
+  "DocsURL": "https://github.com/shanyup/enginewright#readme",
   "CanContainContent": false,
   "IsBetaVersion": true,
   "EnabledByDefault": true,
@@ -16,5 +18,9 @@
       "LoadingPhase": "PostEngineInit",
       "PlatformAllowList": [ "Win64", "Mac", "Linux" ]
     }
+  ],
+  "Plugins": [
+    { "Name": "EnhancedInput", "Enabled": true },
+    { "Name": "DataValidation", "Enabled": true }
   ]
 }

@@ -13,7 +13,14 @@ public class Enginewright : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"UnrealEd", "Projects", "Slate", "SlateCore", "AssetRegistry", "AssetTools", "DeveloperSettings"
+			"UnrealEd", "Projects", "Slate", "SlateCore", "AssetRegistry", "AssetTools", "DeveloperSettings",
+			"BlueprintGraph", "Kismet", "KismetCompiler", "GraphEditor", "ImageWrapper", "InputCore", "EnhancedInput",
+			"MaterialEditor", "LevelEditor", "EditorSubsystem", "DataValidation", "RenderCore", "RHI", "PhysicsCore"
 		});
+
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PrivateDependencyModuleNames.Add("LiveCoding");
+		}
 	}
 }

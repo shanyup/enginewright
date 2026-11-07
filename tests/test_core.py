@@ -1,25 +1,17 @@
-"""Enginewright v0.1 tool tests (asset, datatable, scene, settings, log, doctor, batch).
+"""Core tool tests: assets, DataTables, level actors, settings, log, doctor, batch.
 
-The editor must be open on the project in ENGINEWRIGHT_TEST_PROJECT, and that project needs the
-test fixtures described in README > Running the tests.
+Needs a running editor on ENGINEWRIGHT_TEST_PROJECT (any project; fixtures are created by the tests).
 """
-import json, os, sys, time
+import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import smoke_client as U
+from ewtest import ROOT, call as c, check, done, delete_if_exists, fixtures
 
-T = "/Game/_MCPTest"
-BP = T + "/BP_UEMCPTest"
-res = []
-def check(label, cond, detail=""):
-    res.append((label, bool(cond)))
-    print(("PASS " if cond else "FAIL ") + label + ("" if cond else "  -> " + json.dumps(detail)[:600]))
-    sys.stdout.flush()
-c = U.call
+T = ROOT
+fx = fixtures()
+BP = fx["bp"]
 
-# --- cleanup leftovers from earlier runs (only inside /Game/_MCPTest)
-for p in [T + "/DT_EW", T + "/BP_EWCopy", T + "/BP_EWMoved"]:
-    if c("asset_exists", {"path": p})["data"]["exists"]:
-        c("asset_delete", {"paths": [p], "force": True})
+# --- cleanup leftovers from earlier runs (only inside /Game/_EWTest)
+delete_if_exists(T + "/DT_EW", T + "/BP_EWCopy", T + "/BP_EWMoved")
 
 # --- assets
 r = c("asset_find", {"folder": T, "class": "Blueprint"})
@@ -30,20 +22,21 @@ check("asset_exists true/false", c("asset_exists", {"path": BP})["data"]["exists
 r = c("asset_duplicate", {"source": BP, "destination": T + "/BP_EWCopy"})
 check("asset_duplicate", r["ok"] and c("asset_exists", {"path": T + "/BP_EWCopy"})["data"]["exists"], r)
 
-# --- datatable (also gives a referencer for the rename/delete tests)
-r = c("datatable_create", {"path": T + "/DT_EW", "rowStruct": "FItemDefinition"})
-check("datatable_create (F prefix accepted)", r["ok"], r)
+# --- datatable on a Blueprint struct (also gives a referencer for the rename/delete tests)
+r = c("datatable_create", {"path": T + "/DT_EW", "rowStruct": fx["struct"]})
+check("datatable_create with a Blueprint row struct", r["ok"], r)
 r = c("datatable_set_rows", {"path": T + "/DT_EW", "rows": {
     "Apple": {"DisplayName": "Apple", "Category": "RawIngredient", "ItemClass": T + "/BP_EWCopy.BP_EWCopy_C"},
     "Pie": {"DisplayName": "Pie", "Category": "Dish", "ProcessedItemID": "Apple"}}})
 check("set_rows upsert 2 rows", r["ok"] and len(r["data"]["addedRows"]) == 2, r)
 r = c("datatable_get", {"path": T + "/DT_EW", "rows": ["Apple"], "fields": ["ItemClass", "Category"]})
-check("get_rows readback (soft class set)", r["ok"] and "BP_EWCopy" in r["data"]["rows"]["Apple"]["ItemClass"], r)
+check("get_rows readback (soft class set, enum by display name)", r["ok"] and "BP_EWCopy" in r["data"]["rows"]["Apple"]["ItemClass"]
+      and r["data"]["rows"]["Apple"]["Category"] == "RawIngredient", r)
 r = c("datatable_set_rows", {"path": T + "/DT_EW", "rows": {"Bread": {"DisplayName": "Bread"}, "Pie": {"Categry": "Dish"}}})
 names = c("datatable_get", {"path": T + "/DT_EW", "namesOnly": True})["data"]["rowNames"]
 check("bad field in 2nd row -> error, table restored (Bread not added)", not r["ok"] and "Category" in r.get("suggestions", []) and "Bread" not in names, [r, names])
 r = c("datatable_set_rows", {"path": T + "/DT_EW", "rows": {"Pie": {"Category": "Soup"}}})
-check("bad enum in row -> error", not r["ok"], r)
+check("bad enum in row -> error with suggestions", not r["ok"] and r["errorCode"] in ("INVALID_VALUE", "ROW_INVALID"), r)
 r = c("datatable_set_rows", {"path": T + "/DT_EW", "mode": "update", "rows": {"Cake": {"DisplayName": "x"}}})
 check("mode update + missing row -> error", not r["ok"] and r["errorCode"] == "ROW_NOT_FOUND", r)
 r = c("datatable_rename_row", {"path": T + "/DT_EW", "from": "Pie", "to": "ApplePie"})
@@ -89,6 +82,8 @@ r = c("log_read", {"since": base_seq, "limit": 20})
 check("log_read since returns only new lines", r["ok"] and all(l["seq"] > base_seq for l in r["data"]["lines"]), r)
 r = c("doctor")
 check("doctor reports", r["ok"] and "zenSessions" in r["data"] and "unsavedPackages" in r["data"], r)
+r = c("log_read", {"limit": "ten"})
+check("wrong argument type -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 
 # --- batch
 before = c("object_get", {"path": BP, "classDefault": True, "properties": ["Weight"]})["data"]["properties"]["Weight"]
@@ -105,5 +100,6 @@ r = c("batch", {"steps": [
     {"tool": "object_set", "args": {"path": BP, "classDefault": True, "values": {"Weight": 7}}},
     {"tool": "datatable_set_rows", "args": {"path": T + "/DT_EW", "rows": {"Apple": {"DisplayName": "Apple 2"}}}}]})
 check("batch success saves once at the end", r["ok"] and r["data"]["savedPackages"] == 2, r)
+c("object_set", {"path": BP, "classDefault": True, "values": {"Weight": 1.5}})
 
-print(f"\n{sum(ok for _, ok in res)}/{len(res)} passed")
+done()

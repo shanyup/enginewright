@@ -1,14 +1,21 @@
 #include "EWCommon.h"
 
+#include "Containers/Ticker.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
 #include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
 
 namespace EW
 {
@@ -23,6 +30,11 @@ namespace EW
 		S->SetBoolField(TEXT("playing"), IsPlaying());
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		S->SetStringField(TEXT("map"), World ? World->GetOutermost()->GetName() : FString());
+		if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")) &&
+			FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().IsLoadingAssets())
+		{
+			S->SetBoolField(TEXT("assetsLoading"), true); // Asset searches may be incomplete until the start-up scan ends.
+		}
 		return S;
 	}
 
@@ -119,6 +131,51 @@ namespace EW
 		return Obj;
 	}
 
+	UClass* FindClass(const FString& InName, FString& OutError, TArray<FString>* OutSuggest)
+	{
+		const FString Name = InName.TrimStartAndEnd();
+		if (Name.IsEmpty()) { OutError = TEXT("Class name is empty."); return nullptr; }
+		if (Name.StartsWith(TEXT("/Script/")))
+		{
+			if (UClass* C = FindObject<UClass>(nullptr, *Name)) { return C; }
+			OutError = FString::Printf(TEXT("No class '%s'."), *Name);
+			return nullptr;
+		}
+		if (Name.StartsWith(TEXT("/")))
+		{
+			FString Resolved;
+			UObject* Obj = ResolveObject(Name, false, Resolved, OutError);
+			if (UBlueprint* BP = Cast<UBlueprint>(Obj))
+			{
+				if (BP->GeneratedClass) { return BP->GeneratedClass; }
+				OutError = FString::Printf(TEXT("Blueprint '%s' has no generated class; compile it first."), *Name);
+				return nullptr;
+			}
+			if (UClass* C = Cast<UClass>(Obj)) { return C; }
+			if (Obj) { OutError = FString::Printf(TEXT("'%s' is a %s, not a Blueprint or class."), *Name, *Obj->GetClass()->GetName()); }
+			return nullptr;
+		}
+		FString Short = Name;
+		if (UClass* C = FindFirstObject<UClass>(*Short, EFindFirstObjectOptions::None)) { return C; }
+		// Accept the C++ prefix (AActor, UStaticMeshComponent) too.
+		if (Short.Len() > 1 && (Short[0] == TEXT('A') || Short[0] == TEXT('U')) && FChar::IsUpper(Short[1]))
+		{
+			if (UClass* C = FindFirstObject<UClass>(*Short.RightChop(1), EFindFirstObjectOptions::None)) { return C; }
+		}
+		if (UClass* C = FindFirstObject<UClass>(*(Short + TEXT("_C")), EFindFirstObjectOptions::None)) { return C; }
+		OutError = FString::Printf(TEXT("No class '%s'. Use a short name (StaticMeshActor), /Script/Module.Class or a Blueprint path."), *Name);
+		if (OutSuggest)
+		{
+			TArray<FString> Names;
+			for (TObjectIterator<UClass> It; It; ++It)
+			{
+				if (!It->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists)) { Names.Add(It->GetName()); }
+			}
+			*OutSuggest = Suggest(Short, Names);
+		}
+		return nullptr;
+	}
+
 	static int32 EditDistance(const FString& A, const FString& B)
 	{
 		const FString X = A.ToLower();
@@ -145,6 +202,7 @@ namespace EW
 		TArray<TPair<int32, FString>> Scored;
 		for (const FString& C : Candidates)
 		{
+			if (FMath::Abs(C.Len() - Wanted.Len()) > FMath::Max(8, Wanted.Len())) { continue; }
 			int32 D = EditDistance(Wanted, C);
 			if (C.Contains(Wanted, ESearchCase::IgnoreCase) || Wanted.Contains(C, ESearchCase::IgnoreCase))
 			{
@@ -152,12 +210,12 @@ namespace EW
 			}
 			Scored.Emplace(D, C);
 		}
-		Scored.Sort([](const TPair<int32, FString>& L, const TPair<int32, FString>& R) { return L.Key < R.Key; });
+		Scored.StableSort([](const TPair<int32, FString>& L, const TPair<int32, FString>& R) { return L.Key < R.Key; });
 		TArray<FString> Out;
 		for (const TPair<int32, FString>& S : Scored)
 		{
 			if (Out.Num() >= Max || S.Key > FMath::Max(3, Wanted.Len() / 2)) { break; }
-			Out.Add(S.Value);
+			Out.AddUnique(S.Value);
 		}
 		return Out;
 	}
@@ -170,5 +228,123 @@ namespace EW
 			Args->TryGetStringField(Key, V);
 		}
 		return V;
+	}
+
+	TArray<FString> StrList(const TSharedPtr<FJsonObject>& Args, const FString& Key)
+	{
+		TArray<FString> Out;
+		if (!Args.IsValid()) { return Out; }
+		const TArray<TSharedPtr<FJsonValue>>* List = nullptr;
+		if (Args->TryGetArrayField(Key, List))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *List) { Out.Add(V->AsString()); }
+		}
+		else
+		{
+			FString One;
+			if (Args->TryGetStringField(Key, One)) { Out.Add(One); }
+		}
+		return Out;
+	}
+
+	double Num(const TSharedPtr<FJsonObject>& Args, const FString& Key, double Default)
+	{
+		double V = Default;
+		if (Args.IsValid()) { Args->TryGetNumberField(Key, V); }
+		return V;
+	}
+
+	bool Bool(const TSharedPtr<FJsonObject>& Args, const FString& Key, bool Default)
+	{
+		bool V = Default;
+		if (Args.IsValid()) { Args->TryGetBoolField(Key, V); }
+		return V;
+	}
+
+	bool SplitAssetPath(const FString& InPath, FString& OutFolder, FString& OutName, FString& OutError)
+	{
+		FString Path = InPath.TrimStartAndEnd();
+		int32 Dot;
+		if (Path.FindChar(TEXT('.'), Dot)) { Path = Path.Left(Dot); }
+		if (!Path.StartsWith(TEXT("/")) || Path.EndsWith(TEXT("/")) || !FPackageName::IsValidLongPackageName(Path, false))
+		{
+			OutError = FString::Printf(TEXT("'%s' is not a valid asset path; use /Game/Folder/AssetName."), *InPath);
+			return false;
+		}
+		OutFolder = FPackageName::GetLongPackagePath(Path);
+		OutName = FPackageName::GetShortName(Path);
+		return true;
+	}
+
+	bool AssetPathTaken(const FString& InPath)
+	{
+		FString Path = InPath;
+		int32 Dot;
+		if (Path.FindChar(TEXT('.'), Dot)) { Path = Path.Left(Dot); }
+		UPackage* Pkg = FindPackage(nullptr, *Path);
+		if (!Pkg)
+		{
+			// Not loaded: ask the file system directly (the package-name cache keeps deleted packages).
+			FString File;
+			return FPackageName::TryConvertLongPackageNameToFilename(Path, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File);
+		}
+		UObject* Asset = StaticFindObject(UObject::StaticClass(), Pkg, *FPackageName::GetShortName(Path));
+		return IsValid(Asset);
+	}
+
+	TArray<UWorld*> PieWorlds()
+	{
+		TArray<UWorld*> Out;
+		if (!GEditor) { return Out; }
+		TArray<TPair<int32, UWorld*>> Sorted;
+		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
+		{
+			if (Ctx.WorldType == EWorldType::PIE && Ctx.World()) { Sorted.Emplace(Ctx.PIEInstance, Ctx.World()); }
+		}
+		Sorted.Sort([](const auto& A, const auto& B) { return A.Key < B.Key; });
+		for (const auto& P : Sorted) { Out.Add(P.Value); }
+		return Out;
+	}
+
+	APlayerController* PiePlayer(int32 Index, FString& OutError)
+	{
+		if (!IsPlaying()) { OutError = TEXT("Play In Editor is not running (pie_start first)."); return nullptr; }
+		TArray<APlayerController*> Players;
+		for (UWorld* W : PieWorlds())
+		{
+			for (FConstPlayerControllerIterator It = W->GetPlayerControllerIterator(); It; ++It)
+			{
+				if (APlayerController* PC = It->Get())
+				{
+					if (PC->IsLocalController()) { Players.Add(PC); }
+				}
+			}
+		}
+		if (!Players.IsValidIndex(Index))
+		{
+			OutError = FString::Printf(TEXT("No local player %d; %d player(s) exist."), Index, Players.Num());
+			return nullptr;
+		}
+		return Players[Index];
+	}
+
+	bool EncodePng(const TArray<FColor>& Pixels, int32 Width, int32 Height, TArray64<uint8>& OutPng)
+	{
+		IImageWrapperModule& M = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+		TSharedPtr<IImageWrapper> W = M.CreateImageWrapper(EImageFormat::PNG);
+		if (!W.IsValid() || !W->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Width, Height, ERGBFormat::BGRA, 8)) { return false; }
+		OutPng = W->GetCompressed();
+		return OutPng.Num() > 0;
+	}
+
+	void PollUntil(float TimeoutSeconds, TFunction<bool()> Fn, TFunction<void()> OnTimeout)
+	{
+		const double End = FPlatformTime::Seconds() + TimeoutSeconds;
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Fn, OnTimeout, End](float) -> bool
+		{
+			if (Fn()) { return false; }
+			if (FPlatformTime::Seconds() > End) { OnTimeout(); return false; }
+			return true;
+		}));
 	}
 }

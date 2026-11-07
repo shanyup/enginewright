@@ -6,8 +6,11 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
 #include "FileHelpers.h"
+#include "HAL/FileManager.h"
+#include "Misc/Paths.h"
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
+#include "Misc/RedirectCollector.h"
 #include "ObjectTools.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
@@ -30,7 +33,8 @@ namespace
 	{
 		TArray<FAssetData> Found;
 		Registry().GetAssetsByPackageName(FName(*Package), Found, /*bIncludeOnlyOnDiskAssets*/ false);
-		return Found.Num() > 0;
+		// The registry is incomplete while the editor still scans content after start-up: also ask the disk.
+		return Found.Num() > 0 || EW::AssetPathTaken(Package);
 	}
 
 	UObject* LoadAsset(const FString& Path, FString& OutErr)
@@ -75,6 +79,20 @@ namespace
 		}
 		return false;
 	}
+}
+
+TArray<FString> EW::FindAssets(const FString& Folder, UClass* Class)
+{
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*Folder));
+	Filter.bRecursivePaths = true;
+	if (Class) { Filter.ClassPaths.Add(Class->GetClassPathName()); Filter.bRecursiveClasses = true; }
+	TArray<FAssetData> Found;
+	Registry().GetAssets(Filter, Found);
+	TArray<FString> Out;
+	for (const FAssetData& A : Found) { Out.Add(A.PackageName.ToString()); }
+	Out.Sort();
+	return Out;
 }
 
 void RegisterAssetTools(FEWRegistry& R)
@@ -222,6 +240,15 @@ void RegisterAssetTools(FEWRegistry& R)
 				Tools().FixupReferencers({ Redirector }, /*bCheckoutDialogPrompt*/ false);
 			}
 			if (AssetExists(Old)) { Res.Warnings.Add(TEXT("A redirector is still at the old path; something could not be fixed up.")); }
+			else
+			{
+				// Referencers are fixed and the redirector is gone: forget the in-session path redirection too, so a
+				// new asset created later at the old path is not silently redirected to the moved one.
+				const FString OldPkg = FPackageName::ObjectPathToPackageName(OldObjectPath);
+				const FString OldName = FPackageName::GetShortName(OldPkg);
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName));
+				GRedirectCollector.RemoveAssetPathRedirection(FSoftObjectPath(OldPkg + TEXT(".") + OldName + TEXT("_C")));
+			}
 
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("path"), Dest);
@@ -275,8 +302,37 @@ void RegisterAssetTools(FEWRegistry& R)
 			}
 
 			const int32 Deleted = bForce ? ObjectTools::ForceDeleteObjects(Objects, false) : ObjectTools::DeleteObjects(Objects, false);
+			Objects.Reset();
+			// Free the deleted packages now, so the same path can be created again in this session.
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			TArray<FString> Left;
-			for (const FString& Package : Set) { if (AssetExists(Package)) { Left.Add(Package); } }
+			for (const FString& Package : Set)
+			{
+				TArray<FAssetData> Still;
+				Registry().GetAssetsByPackageName(FName(*Package), Still, false);
+				UPackage* StillLoaded = FindPackage(nullptr, *Package);
+				UObject* StillAsset = StillLoaded ? StaticFindObject(UObject::StaticClass(), StillLoaded, *FPackageName::GetShortName(Package)) : nullptr;
+				FString PkgFile;
+				const bool bFileThere = FPackageName::TryConvertLongPackageNameToFilename(Package, PkgFile, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(PkgFile);
+				if (Still.Num() == 0 && !bFileThere && IsValid(StillAsset))
+				{
+					// Deleted from the registry and from disk, but something (undo buffer, an open tool) still holds the
+					// object. Move it out of the way so the path is really free again.
+					StillAsset->Rename(*MakeUniqueObjectName(GetTransientPackage(), StillAsset->GetClass(), FName(*(TEXT("EWDeleted_") + StillAsset->GetName()))).ToString(),
+						GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+					StillAsset->MarkAsGarbage();
+					StillAsset = nullptr;
+				}
+				if (Still.Num() > 0 || IsValid(StillAsset)) { Left.Add(Package); continue; }
+				// The engine skips the file when its package-name cache says the package is gone (for example a
+				// package deleted and created again in this session). The package is unloaded here, so remove
+				// the leftover file ourselves; otherwise the path stays taken until the editor restarts.
+				FString File;
+				if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File))
+				{
+					if (!IFileManager::Get().Delete(*File, false, false, true)) { Left.Add(Package); }
+				}
+			}
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetNumberField(TEXT("deleted"), Deleted);
 			Data->SetArrayField(TEXT("stillThere"), ToJson(Left));
