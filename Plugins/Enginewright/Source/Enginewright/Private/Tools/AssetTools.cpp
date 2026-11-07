@@ -30,7 +30,8 @@ namespace
 	{
 		TArray<FAssetData> Found;
 		Registry().GetAssetsByPackageName(FName(*Package), Found, /*bIncludeOnlyOnDiskAssets*/ false);
-		return Found.Num() > 0;
+		// The registry is incomplete while the editor still scans content after start-up: also ask the disk.
+		return Found.Num() > 0 || EW::AssetPathTaken(Package);
 	}
 
 	UObject* LoadAsset(const FString& Path, FString& OutErr)
@@ -75,6 +76,20 @@ namespace
 		}
 		return false;
 	}
+}
+
+TArray<FString> EW::FindAssets(const FString& Folder, UClass* Class)
+{
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*Folder));
+	Filter.bRecursivePaths = true;
+	if (Class) { Filter.ClassPaths.Add(Class->GetClassPathName()); Filter.bRecursiveClasses = true; }
+	TArray<FAssetData> Found;
+	Registry().GetAssets(Filter, Found);
+	TArray<FString> Out;
+	for (const FAssetData& A : Found) { Out.Add(A.PackageName.ToString()); }
+	Out.Sort();
+	return Out;
 }
 
 void RegisterAssetTools(FEWRegistry& R)
@@ -275,8 +290,11 @@ void RegisterAssetTools(FEWRegistry& R)
 			}
 
 			const int32 Deleted = bForce ? ObjectTools::ForceDeleteObjects(Objects, false) : ObjectTools::DeleteObjects(Objects, false);
+			Objects.Reset();
+			// Free the deleted packages now, so the same path can be created again in this session.
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			TArray<FString> Left;
-			for (const FString& Package : Set) { if (AssetExists(Package)) { Left.Add(Package); } }
+			for (const FString& Package : Set) { TArray<FAssetData> Still; Registry().GetAssetsByPackageName(FName(*Package), Still, false); if (Still.Num() > 0) { Left.Add(Package); } }
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetNumberField(TEXT("deleted"), Deleted);
 			Data->SetArrayField(TEXT("stillThere"), ToJson(Left));

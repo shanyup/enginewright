@@ -20,7 +20,23 @@ void RegisterDataTableTools(FEWRegistry& R);
 void RegisterSceneTools(FEWRegistry& R);
 void RegisterSettingsLogTools(FEWRegistry& R);
 void RegisterBatchTool(FEWRegistry& R);
-namespace EW { void InstallLogCapture(); void RemoveLogCapture(); }
+void RegisterClientTools(FEWRegistry& R);
+void RegisterTypeTools(FEWRegistry& R);
+void RegisterBlueprintTools(FEWRegistry& R);
+void RegisterPieTools(FEWRegistry& R);
+void RegisterBuildTools(FEWRegistry& R);
+void RegisterMaterialTools(FEWRegistry& R);
+void RegisterMeshTextureTools(FEWRegistry& R);
+void RegisterImportTools(FEWRegistry& R);
+void RegisterInputTools(FEWRegistry& R);
+void RegisterValidationTools(FEWRegistry& R);
+void RegisterAuditTools(FEWRegistry& R);
+namespace EW
+{
+	void InstallLogCapture();
+	void RemoveLogCapture();
+	void WriteClientConfigs(const FString& Url, const FString& Token, const FString& Dir);
+}
 
 static const TCHAR* GInstructions =
 	TEXT("Enginewright drives the running Unreal Editor. Use search with 2-4 plain words to find a tool, describe to read its arguments, call to run it. ")
@@ -79,6 +95,11 @@ namespace
 	}
 }
 
+FString FEnginewrightModule::GetUrl() const
+{
+	return FString::Printf(TEXT("http://127.0.0.1:%u/mcp"), Port);
+}
+
 void FEnginewrightModule::StartupModule()
 {
 	FEWRegistry& Reg = FEWRegistry::Get();
@@ -90,6 +111,17 @@ void FEnginewrightModule::StartupModule()
 	RegisterSceneTools(Reg);
 	RegisterSettingsLogTools(Reg);
 	RegisterBatchTool(Reg);
+	RegisterClientTools(Reg);
+	RegisterTypeTools(Reg);
+	RegisterBlueprintTools(Reg);
+	RegisterPieTools(Reg);
+	RegisterBuildTools(Reg);
+	RegisterMaterialTools(Reg);
+	RegisterMeshTextureTools(Reg);
+	RegisterImportTools(Reg);
+	RegisterInputTools(Reg);
+	RegisterValidationTools(Reg);
+	RegisterAuditTools(Reg);
 
 	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
 	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }
@@ -103,12 +135,7 @@ void FEnginewrightModule::StartupModule()
 		FFileHelper::SaveStringToFile(Token, *TokenFile);
 	}
 	Token = Token.TrimStartAndEnd();
-
-	const FString Url = FString::Printf(TEXT("http://127.0.0.1:%u/mcp"), Port);
-	const FString ClientCfg = FString::Printf(
-		TEXT("{\n  \"mcpServers\": {\n    \"enginewright\": {\n      \"type\": \"http\",\n      \"url\": \"%s\",\n      \"headers\": { \"X-Enginewright-Token\": \"%s\" }\n    }\n  }\n}\n"),
-		*Url, *Token);
-	FFileHelper::SaveStringToFile(ClientCfg, *(Dir / TEXT("client-config.json")));
+	EW::WriteClientConfigs(GetUrl(), Token, Dir);
 
 	Router = FHttpServerModule::Get().GetHttpRouter(Port, /*bFailOnBindFailure*/ true);
 	if (!Router.IsValid())
@@ -122,13 +149,13 @@ void FEnginewrightModule::StartupModule()
 	Routes.Add(Router->BindRoute(FHttpPath(TEXT("/mcp")), EHttpServerRequestVerbs::VERB_GET | EHttpServerRequestVerbs::VERB_DELETE,
 		FHttpRequestHandler::CreateLambda([](const FHttpServerRequest&, const FHttpResultCallback& OnComplete)
 		{
-			// No server-sent stream in v0.1: every reply comes back on the POST.
+			// No server-sent stream: every reply comes back on the POST.
 			OnComplete(Reply(EHttpServerResponseCodes::BadMethod, TEXT("{}")));
 			return true;
 		})));
 	FHttpServerModule::Get().StartAllListeners();
-	UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server on %s (%d tools). Client config: %s"),
-		*Url, Reg.All().Num(), *(Dir / TEXT("client-config.json")));
+	UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server on %s (%d tools). Client configs: %s"),
+		*GetUrl(), Reg.All().Num(), *(Dir / TEXT("clients")));
 }
 
 void FEnginewrightModule::ShutdownModule()
@@ -169,23 +196,25 @@ bool FEnginewrightModule::HandlePost(const FHttpServerRequest& Request, const FH
 		return true;
 	}
 
-	const FString Out = HandleRpc(Msg);
-	if (Out.IsEmpty())
-	{
-		OnComplete(Reply(EHttpServerResponseCodes::Accepted, FString()));
-		return true;
-	}
-	TUniquePtr<FHttpServerResponse> R = Reply(EHttpServerResponseCodes::Ok, Out);
 	FString Method;
-	if (Msg->TryGetStringField(TEXT("method"), Method) && Method == TEXT("initialize"))
+	Msg->TryGetStringField(TEXT("method"), Method);
+	const bool bInit = Method == TEXT("initialize");
+	FHttpResultCallback Complete = OnComplete;
+	HandleRpc(Msg, [Complete, bInit](const FString& Out)
 	{
-		R->Headers.Add(TEXT("Mcp-Session-Id"), { FGuid::NewGuid().ToString(EGuidFormats::Digits) });
-	}
-	OnComplete(MoveTemp(R));
+		if (Out.IsEmpty())
+		{
+			Complete(Reply(EHttpServerResponseCodes::Accepted, FString()));
+			return;
+		}
+		TUniquePtr<FHttpServerResponse> R = Reply(EHttpServerResponseCodes::Ok, Out);
+		if (bInit) { R->Headers.Add(TEXT("Mcp-Session-Id"), { FGuid::NewGuid().ToString(EGuidFormats::Digits) }); }
+		Complete(MoveTemp(R));
+	});
 	return true;
 }
 
-FString FEnginewrightModule::HandleRpc(const TSharedPtr<FJsonObject>& Msg)
+void FEnginewrightModule::HandleRpc(const TSharedPtr<FJsonObject>& Msg, TFunction<void(const FString&)> ReplyFn)
 {
 	const TSharedPtr<FJsonValue> Id = Msg->TryGetField(TEXT("id"));
 	FString Method;
@@ -195,7 +224,8 @@ FString FEnginewrightModule::HandleRpc(const TSharedPtr<FJsonObject>& Msg)
 
 	if (!Id.IsValid() || Id->IsNull())
 	{
-		return FString(); // Notification (e.g. notifications/initialized): no reply body.
+		ReplyFn(FString()); // Notification (e.g. notifications/initialized): no reply body.
+		return;
 	}
 
 	if (Method == TEXT("initialize"))
@@ -212,18 +242,21 @@ FString FEnginewrightModule::HandleRpc(const TSharedPtr<FJsonObject>& Msg)
 		R->SetObjectField(TEXT("capabilities"), Caps);
 		TSharedRef<FJsonObject> Info = MakeShared<FJsonObject>();
 		Info->SetStringField(TEXT("name"), TEXT("enginewright"));
-		Info->SetStringField(TEXT("version"), TEXT("0.1.0-dev"));
+		Info->SetStringField(TEXT("version"), ENGINEWRIGHT_VERSION);
 		R->SetObjectField(TEXT("serverInfo"), Info);
 		R->SetStringField(TEXT("instructions"), GInstructions);
-		return RpcResult(Id, R);
+		ReplyFn(RpcResult(Id, R));
+		return;
 	}
 	if (Method == TEXT("ping"))
 	{
-		return RpcResult(Id, MakeShared<FJsonObject>());
+		ReplyFn(RpcResult(Id, MakeShared<FJsonObject>()));
+		return;
 	}
 	if (Method == TEXT("tools/list"))
 	{
-		return RpcResult(Id, ToolsList());
+		ReplyFn(RpcResult(Id, ToolsList()));
+		return;
 	}
 	if (Method == TEXT("tools/call"))
 	{
@@ -231,9 +264,10 @@ FString FEnginewrightModule::HandleRpc(const TSharedPtr<FJsonObject>& Msg)
 		Params->TryGetStringField(TEXT("name"), Name);
 		const TSharedPtr<FJsonObject>* ArgsPtr = nullptr;
 		TSharedPtr<FJsonObject> Args = Params->TryGetObjectField(TEXT("arguments"), ArgsPtr) ? *ArgsPtr : MakeShared<FJsonObject>();
-		return RpcResult(Id, CallTool(Name, Args));
+		CallTool(Name, Args, [Id, ReplyFn](TSharedRef<FJsonObject> Result) { ReplyFn(RpcResult(Id, Result)); });
+		return;
 	}
-	return RpcError(Id, -32601, FString::Printf(TEXT("Method not found: %s"), *Method));
+	ReplyFn(RpcError(Id, -32601, FString::Printf(TEXT("Method not found: %s"), *Method)));
 }
 
 TSharedRef<FJsonObject> FEnginewrightModule::ToolsList() const
@@ -253,40 +287,68 @@ TSharedRef<FJsonObject> FEnginewrightModule::ToolsList() const
 	return R;
 }
 
-TSharedRef<FJsonObject> FEnginewrightModule::CallTool(const FString& Name, const TSharedPtr<FJsonObject>& Args) const
+static FEWResult SearchTools(const FString& Query)
 {
-	FEWRegistry& Reg = FEWRegistry::Get();
-	FEWResult Res;
+	TArray<FString> Words;
+	Query.ToLower().ParseIntoArrayWS(Words);
+	TArray<TPair<int32, const FEWTool*>> Scored;
+	for (const FEWTool& T : FEWRegistry::Get().All())
+	{
+		const FString Hay = (T.Name + TEXT(" ") + T.Description).ToLower();
+		int32 Score = 0;
+		for (const FString& W : Words)
+		{
+			if (T.Name.Contains(W)) { Score += 3; }
+			else if (Hay.Contains(W)) { Score += 1; }
+		}
+		if (Score > 0) { Scored.Emplace(Score, &T); }
+	}
+	Scored.StableSort([](const auto& A, const auto& B) { return A.Key > B.Key; });
+	TArray<TSharedPtr<FJsonValue>> Rows;
+	for (const auto& S : Scored)
+	{
+		if (Rows.Num() >= 15) { break; }
+		TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("name"), S.Value->Name);
+		Row->SetStringField(TEXT("summary"), FirstSentence(S.Value->Description));
+		Row->SetStringField(TEXT("effect"), S.Value->bWrites ? TEXT("write") : TEXT("read"));
+		Rows.Add(MakeShared<FJsonValueObject>(Row));
+	}
+	TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("results"), Rows);
+	Data->SetNumberField(TEXT("matched"), Scored.Num());
+	return FEWResult::Ok(Data, Rows.Num() ? FString() : TEXT("No match. Try other words, e.g. 'blueprint', 'asset', 'pie', 'material'."));
+}
 
+void FEnginewrightModule::CallTool(const FString& Name, const TSharedPtr<FJsonObject>& Args, TFunction<void(TSharedRef<FJsonObject>)> Done) const
+{
+	auto Finish = [Done](FEWResult Res)
+	{
+		const TSharedRef<FJsonObject> Body = Res.ToJson();
+		TArray<TSharedPtr<FJsonValue>> Content;
+		TSharedRef<FJsonObject> Text = MakeShared<FJsonObject>();
+		Text->SetStringField(TEXT("type"), TEXT("text"));
+		Text->SetStringField(TEXT("text"), EW::ToJsonString(Body));
+		Content.Add(MakeShared<FJsonValueObject>(Text));
+		for (const TPair<FString, FString>& Img : Res.Images)
+		{
+			TSharedRef<FJsonObject> I = MakeShared<FJsonObject>();
+			I->SetStringField(TEXT("type"), TEXT("image"));
+			I->SetStringField(TEXT("mimeType"), Img.Key);
+			I->SetStringField(TEXT("data"), Img.Value);
+			Content.Add(MakeShared<FJsonValueObject>(I));
+		}
+		TSharedRef<FJsonObject> R = MakeShared<FJsonObject>();
+		R->SetArrayField(TEXT("content"), Content);
+		R->SetObjectField(TEXT("structuredContent"), Body);
+		R->SetBoolField(TEXT("isError"), !Res.bOk);
+		Done(R);
+	};
+
+	FEWRegistry& Reg = FEWRegistry::Get();
 	if (Name == TEXT("search"))
 	{
-		TArray<FString> Words;
-		EW::Str(Args, TEXT("query")).ToLower().ParseIntoArrayWS(Words);
-		TArray<TPair<int32, const FEWTool*>> Scored;
-		for (const FEWTool& T : Reg.All())
-		{
-			const FString Hay = (T.Name + TEXT(" ") + T.Description).ToLower();
-			int32 Score = 0;
-			for (const FString& W : Words)
-			{
-				if (T.Name.Contains(W)) { Score += 3; }
-				else if (Hay.Contains(W)) { Score += 1; }
-			}
-			if (Score > 0) { Scored.Emplace(Score, &T); }
-		}
-		Scored.Sort([](const auto& A, const auto& B) { return A.Key > B.Key; });
-		TArray<TSharedPtr<FJsonValue>> Rows;
-		for (const auto& S : Scored)
-		{
-			TSharedRef<FJsonObject> Row = MakeShared<FJsonObject>();
-			Row->SetStringField(TEXT("name"), S.Value->Name);
-			Row->SetStringField(TEXT("summary"), FirstSentence(S.Value->Description));
-			Row->SetStringField(TEXT("effect"), S.Value->bWrites ? TEXT("write") : TEXT("read"));
-			Rows.Add(MakeShared<FJsonValueObject>(Row));
-		}
-		TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetArrayField(TEXT("results"), Rows);
-		Res = FEWResult::Ok(Data, Rows.Num() ? FString() : TEXT("No match. Try other words; search with 'all' style words like 'editor' or 'object'."));
+		Finish(SearchTools(EW::Str(Args, TEXT("query"))));
 	}
 	else if (Name == TEXT("describe"))
 	{
@@ -297,33 +359,25 @@ TSharedRef<FJsonObject> FEnginewrightModule::CallTool(const FString& Name, const
 			Data->SetStringField(TEXT("name"), T->Name);
 			Data->SetStringField(TEXT("description"), T->Description);
 			Data->SetStringField(TEXT("effect"), T->bWrites ? TEXT("write") : TEXT("read"));
+			Data->SetBoolField(TEXT("waits"), T->IsAsync());
 			Data->SetObjectField(TEXT("inputSchema"), T->InputSchema);
-			Res = FEWResult::Ok(Data);
+			Finish(FEWResult::Ok(Data));
 		}
 		else
 		{
-			Res = Reg.Call(ToolName, nullptr); // Produces UNKNOWN_TOOL with suggestions.
+			const FEWTool* None = nullptr;
+			Finish(Reg.Check(ToolName, MakeShared<FJsonObject>(), None)); // UNKNOWN_TOOL with suggestions.
 		}
 	}
 	else if (Name == TEXT("call"))
 	{
 		const TSharedPtr<FJsonObject>* CallArgs = nullptr;
-		Res = Reg.Call(EW::Str(Args, TEXT("name")), Args->TryGetObjectField(TEXT("args"), CallArgs) ? *CallArgs : nullptr);
+		Reg.CallAsync(EW::Str(Args, TEXT("name")), Args->TryGetObjectField(TEXT("args"), CallArgs) ? *CallArgs : nullptr, Finish);
 	}
 	else
 	{
-		Res = Reg.Call(Name, Args); // Direct call by tool name also works.
+		Reg.CallAsync(Name, Args, Finish); // Direct call by tool name also works.
 	}
-
-	const TSharedRef<FJsonObject> Body = Res.ToJson();
-	TSharedRef<FJsonObject> Text = MakeShared<FJsonObject>();
-	Text->SetStringField(TEXT("type"), TEXT("text"));
-	Text->SetStringField(TEXT("text"), EW::ToJsonString(Body));
-	TSharedRef<FJsonObject> R = MakeShared<FJsonObject>();
-	R->SetArrayField(TEXT("content"), { MakeShared<FJsonValueObject>(Text) });
-	R->SetObjectField(TEXT("structuredContent"), Body);
-	R->SetBoolField(TEXT("isError"), !Res.bOk);
-	return R;
 }
 
 IMPLEMENT_MODULE(FEnginewrightModule, Enginewright)

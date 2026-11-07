@@ -110,10 +110,20 @@ namespace EW
 			{
 				const FString Name = V->AsString();
 				const FString Short = Name.Contains(TEXT("::")) ? Name.RightChop(Name.Find(TEXT("::")) + 2) : Name;
-				if (Enum->GetValueByNameString(Short) == INDEX_NONE && Enum->GetValueByNameString(Name) == INDEX_NONE)
+				if (Enum->GetValueByNameString(Short) != INDEX_NONE) { return MakeShared<FJsonValueString>(Short); }
+				// Blueprint enums: the authored (display) name is what users see and what readback returns.
+				if (Enum->GetValueByName(FName(*Short), EGetByNameFlags::CheckAuthoredName) != INDEX_NONE) { return MakeShared<FJsonValueString>(Short); }
+				for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)
+				{
+					if (Enum->GetAuthoredNameStringByIndex(i).Equals(Short, ESearchCase::IgnoreCase))
+					{
+						return MakeShared<FJsonValueString>(Enum->GetAuthoredNameStringByIndex(i));
+					}
+				}
+				if (Enum->GetValueByNameString(Name) == INDEX_NONE)
 				{
 					TArray<FString> Names;
-					for (int32 i = 0; i < Enum->NumEnums() - 1; ++i) { Names.Add(Enum->GetNameStringByIndex(i)); }
+					for (int32 i = 0; i < Enum->NumEnums() - 1; ++i) { Names.Add(Enum->GetAuthoredNameStringByIndex(i)); }
 					OutError = FString::Printf(TEXT("%s: '%s' is not a value of %s."), *Where, *Name, *Enum->GetName());
 					OutSuggest = Suggest(Short, Names);
 					return nullptr;
@@ -230,7 +240,12 @@ namespace EW
 		}
 
 		// 2) Write. Roll back the values already written on the first failure.
-		if (Owner) { Owner->Modify(); }
+		if (Owner)
+		{
+			// Class default objects of Blueprints made in this session are not transactional; undo would skip them.
+			Owner->SetFlags(RF_Transactional);
+			Owner->Modify();
+		}
 		TArray<FString> Before;
 		for (const auto& Step : Plan)
 		{

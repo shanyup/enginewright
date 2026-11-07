@@ -1,68 +1,46 @@
-"""Smoke test for Enginewright v0.1. Run with the editor open.
+"""Smoke test: protocol, auth, meta tools, strict arguments, client configs. Read-only; safe on any project.
 
-Usage: python smoke.py [project_dir] [blueprint_path]
-project_dir defaults to the ENGINEWRIGHT_TEST_PROJECT environment variable. Optional: ENGINEWRIGHT_URL.
+Usage: python tests/smoke.py   (ENGINEWRIGHT_TEST_PROJECT must point at the open project)
 """
-import json, os, pathlib, sys, urllib.request
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ewtest import rpc, call as c, check, done
 
-_proj = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ENGINEWRIGHT_TEST_PROJECT")
-if not _proj:
-    sys.exit("Pass the project folder or set ENGINEWRIGHT_TEST_PROJECT (see README > Running the tests).")
-PROJ = pathlib.Path(_proj)
-URL = os.environ.get("ENGINEWRIGHT_URL", "http://127.0.0.1:3100/mcp")
-TOKEN = (PROJ / "Saved/Enginewright/token").read_text().strip()
-n = 0
-
-
-def rpc(method, params=None, token=TOKEN):
-    global n
-    n += 1
-    body = json.dumps({"jsonrpc": "2.0", "id": n, "method": method, "params": params or {}}).encode()
-    req = urllib.request.Request(URL, data=body, method="POST", headers={
-        "Content-Type": "application/json", "Accept": "application/json, text/event-stream", "X-Enginewright-Token": token})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.status, json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()
-
-
-def call(name, args=None):
-    s, r = rpc("tools/call", {"name": "call", "arguments": {"name": name, "args": args or {}}})
-    return r["result"]["structuredContent"]
-
-
-checks = []
-def check(label, cond, detail=""):
-    checks.append((label, bool(cond)))
-    print(("PASS " if cond else "FAIL ") + label + ("" if cond else f"  -> {str(detail)[:400]}"))
-
-
-s, _ = rpc("ping", token="wrong")
+s, _ = rpc("ping", tok="wrong")
 check("auth: wrong token is refused (401)", s == 401, s)
 s, r = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "0"}})
 check("initialize", s == 200 and r["result"]["serverInfo"]["name"] == "enginewright", r)
 s, r = rpc("tools/list")
 check("tools/list = 3 meta tools", [t["name"] for t in r["result"]["tools"]] == ["search", "describe", "call"], r)
 s, r = rpc("tools/call", {"name": "search", "arguments": {"query": "set property"}})
-check("search finds object_set", r["result"]["structuredContent"]["data"]["results"][0]["name"] == "object_set", r)
+check("search finds object_set first", r["result"]["structuredContent"]["data"]["results"][0]["name"] == "object_set", r)
+s, r = rpc("tools/call", {"name": "search", "arguments": {"query": "screenshot game camera"}})
+check("search finds screenshot", r["result"]["structuredContent"]["data"]["results"][0]["name"] == "screenshot", r)
+s, r = rpc("tools/call", {"name": "describe", "arguments": {"name": "log_wait"}})
+check("describe marks waiting tools", r["result"]["structuredContent"]["data"]["waits"] is True, r)
+s, r = rpc("tools/call", {"name": "describe", "arguments": {"name": "objet_get"}})
+check("describe unknown tool -> suggestion", "object_get" in r["result"]["structuredContent"].get("suggestions", []), r)
 
-r = call("editor_state")
-check("editor_state ok", r["ok"] and "playing" in r["data"], r)
-r = call("editor_state", {"bogus": 1})
+r = c("editor_state")
+check("editor_state ok", r["ok"] and "playing" in r["data"] and r["data"]["server"].startswith("Enginewright"), r)
+r = c("editor_state", {"bogus": 1})
 check("unknown argument -> error", not r["ok"] and r["errorCode"] == "UNKNOWN_ARGUMENT", r)
-r = call("console_commnd", {"command": "stat fps"})
+r = c("console_commnd", {"command": "stat fps"})
 check("unknown tool -> suggestion", not r["ok"] and "console_command" in r.get("suggestions", []), r)
-r = call("console_command", {"command": "stat fps"})
+r = c("console_command", {"command": "stat fps"})
 check("console_command editor", r["ok"], r)
+r = c("console_command", {})
+check("missing required argument -> error", not r["ok"] and r["errorCode"] == "MISSING_ARGUMENT", r)
+r = c("screenshot", {"source": "camera"})
+check("bad enum argument -> error with suggestion", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("batch", {"steps": [{"tool": "log_wait", "args": {"pattern": "x"}}]})
+check("waiting tool inside batch -> refused", not r["ok"], r)
 
-# Strict writes on a scratch asset: a DataTable row struct is not a UObject, so test on a material instance-free target:
-# the editor's own World Settings object is always there; use a Blueprint CDO when the project passes one.
-target = sys.argv[2] if len(sys.argv) > 2 else None
-if target:
-    r = call("object_get", {"path": target, "classDefault": True})
-    check("object_get CDO", r["ok"], r)
-    r = call("object_set", {"path": target, "classDefault": True, "values": {"NotAField": 1}, "save": False})
-    check("unknown property -> error, nothing written", not r["ok"] and r["errorCode"] == "UNKNOWN_PROPERTY", r)
+r = c("client_config")
+names = [x["client"] for x in r["data"]["configs"]] if r["ok"] else []
+check("client_config lists 6 configs", r["ok"] and names == ["claude-code", "claude-code-cli", "codex", "cursor", "vscode", "hermes"], r)
+check("client config files exist on disk", r["ok"] and all(os.path.isfile(os.path.join(r["data"]["folder"], x["file"])) for x in r["data"]["configs"]), r)
+r = c("client_config", {"client": "codex"})
+check("codex config is TOML with url and header", r["ok"] and len(r["data"]["configs"]) == 1 and "[mcp_servers.enginewright]" in r["data"]["configs"][0]["text"], r)
 
-print(f"\n{sum(c for _, c in checks)}/{len(checks)} passed")
+done()

@@ -3,6 +3,7 @@
 #include "EWProps.h"
 
 #include "Engine/DeveloperSettings.h"
+#include "Editor/EditorPerformanceSettings.h"
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -31,7 +32,7 @@ namespace
 		{
 			FScopeLock Lock(&Guard);
 			Lines.Add({ ++Seq, Category.ToString(), Verbosity, V });
-			if (Lines.Num() > 5000) { Lines.RemoveAt(0, 1000, EAllowShrinking::No); }
+			if (Lines.Num() > 20000) { Lines.RemoveAt(0, 2000, EAllowShrinking::No); }
 		}
 		virtual bool CanBeUsedOnAnyThread() const override { return true; }
 		virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
@@ -107,10 +108,85 @@ namespace EW
 			GCapture = nullptr;
 		}
 	}
+
+	uint64 LogSeq()
+	{
+		if (!GCapture) { return 0; }
+		FScopeLock Lock(&GCapture->Guard);
+		return GCapture->Seq;
+	}
+
+	TArray<FString> LogLinesSince(uint64 Seq, const FString& Category, const FString& Contains)
+	{
+		TArray<FString> Out;
+		if (!GCapture) { return Out; }
+		FScopeLock Lock(&GCapture->Guard);
+		for (const FLine& L : GCapture->Lines)
+		{
+			if (L.Seq <= Seq) { continue; }
+			if (!Category.IsEmpty() && !L.Category.Equals(Category, ESearchCase::IgnoreCase)) { continue; }
+			if (!Contains.IsEmpty() && !L.Text.Contains(Contains)) { continue; }
+			Out.Add(L.Category + TEXT(": ") + L.Text);
+		}
+		return Out;
+	}
 }
 
 void RegisterSettingsLogTools(FEWRegistry& R)
 {
+	R.RegisterAsync(TEXT("log_wait"),
+		TEXT("Wait until a log line containing pattern appears (from now, or after since), e.g. after pie_start, a console command or a cheat. Returns the matching line, or TIMEOUT."),
+		TEXT(R"({"type":"object","properties":{
+			"pattern":{"type":"string","description":"Case-insensitive text the line must contain."},
+			"category":{"type":"string"},
+			"since":{"type":"number","description":"Also match lines after this sequence number (lastSeq of an earlier log_read)."},
+			"timeout":{"type":"number","description":"Seconds, default 10, max 600."}},
+			"required":["pattern"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			if (!GCapture) { Done(FEWResult::Error(TEXT("NO_LOG"), TEXT("Log capture is not running."))); return; }
+			const FString Pattern = EW::Str(Args, TEXT("pattern"));
+			const FString Category = EW::Str(Args, TEXT("category"));
+			if (Pattern.IsEmpty()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("pattern is empty."))); return; }
+			uint64 From = 0;
+			{
+				FScopeLock Lock(&GCapture->Guard);
+				From = GCapture->Seq;
+			}
+			if (Args->HasField(TEXT("since"))) { From = (uint64)EW::Num(Args, TEXT("since"), 0); }
+			const float Timeout = FMath::Clamp((float)EW::Num(Args, TEXT("timeout"), 10), 0.f, 600.f);
+			TSharedRef<uint64> Cursor = MakeShared<uint64>(From);
+			EW::PollUntil(Timeout,
+				[Done, Pattern, Category, Cursor]() -> bool
+				{
+					if (!GCapture) { return false; }
+					FScopeLock Lock(&GCapture->Guard);
+					for (const FLine& L : GCapture->Lines)
+					{
+						if (L.Seq <= *Cursor) { continue; }
+						if (!Category.IsEmpty() && !L.Category.Equals(Category, ESearchCase::IgnoreCase)) { continue; }
+						if (!L.Text.Contains(Pattern)) { continue; }
+						TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+						Data->SetNumberField(TEXT("seq"), (double)L.Seq);
+						Data->SetStringField(TEXT("category"), L.Category);
+						Data->SetStringField(TEXT("verbosity"), VerbosityName(L.Verbosity));
+						Data->SetStringField(TEXT("text"), L.Text);
+						Done(FEWResult::Ok(Data));
+						return true;
+					}
+					*Cursor = GCapture->Seq;
+					return false;
+				},
+				[Done, Pattern, Cursor]()
+				{
+					FEWResult Res = FEWResult::Error(TEXT("TIMEOUT"), FString::Printf(TEXT("No log line with '%s' appeared in time."), *Pattern));
+					Res.Data = MakeShared<FJsonObject>();
+					Res.Data->SetNumberField(TEXT("lastSeq"), (double)*Cursor);
+					Done(Res);
+				});
+		});
+
 	R.Register(TEXT("log_read"),
 		TEXT("Read editor log lines captured since the editor started, filtered by text, category and minimum severity. Pass since (the lastSeq of the previous reply) to get only new lines, e.g. to wait for a line after pie_start."),
 		TEXT(R"({"type":"object","properties":{
@@ -246,6 +322,14 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 				Res.Warnings.Add(FString::Printf(TEXT("%d stored Zen sessions slow the next editor start (a 'Wait for ZenServer?' prompt). Fix: with the editor and zenserver closed, empty %s."), Sessions, *ZenDir));
 			}
 			if (EW::IsPlaying()) { Res.Warnings.Add(TEXT("Play In Editor runs: asset edits are blocked until pie_stop.")); }
+			if (const UEditorPerformanceSettings* Perf = GetDefault<UEditorPerformanceSettings>())
+			{
+				Data->SetBoolField(TEXT("throttleWhenInBackground"), Perf->bThrottleCPUWhenNotForeground);
+				if (Perf->bThrottleCPUWhenNotForeground)
+				{
+					Res.Warnings.Add(TEXT("The editor slows down when its window is in the background, so waits and Play In Editor tests run slowly. Fix: settings_set class EditorPerformanceSettings values {\"bThrottleCPUWhenNotForeground\": false}."));
+				}
+			}
 			Data->SetBoolField(TEXT("healthy"), Res.Warnings.Num() == 0);
 			Res.Data = Data;
 			return Res;
