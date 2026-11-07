@@ -6,7 +6,7 @@ Exit code 0 only when every suite passed.
 import os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ORDER = ["smoke", "core", "blueprint", "assets", "input", "pie", "measure", "multiplayer", "audit", "build"]
+ORDER = ["smoke", "core", "blueprint", "assets", "input", "pie", "measure", "multiplayer", "umg", "tags", "audit", "build"]
 
 
 def suites():

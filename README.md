@@ -70,6 +70,8 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Play In Editor | `pie_start` (1-4 players; standalone, listen or client; waits until every player has a pawn), `pie_stop`, `pie_state`, `pie_input` (synthetic Enhanced Input action or key per player), `screenshot` (what a player sees, or the editor viewport), `screenshot_ab` (same view before and after a change, with the share of changed pixels) |
 | Multiplayer | `pie_actors` (what the server and each client see: count, net roles, owner, property values; can wait for replication), `pie_net_emulation` (lag, loss, duplicates, reordering; profiles off / average / bad) |
 | Readability | `screen_coverage` (how big an actor looks from a player's camera: pixels and share of the screen) |
+| UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (Widget Blueprint to PNG at any resolution, no Play In Editor) |
+| Gameplay Tags | `gameplay_tags_list`, `gameplay_tag_add` (to a tag ini, strict names), `gameplay_tag_remove` (refused while assets use the tag) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
 | Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config` |

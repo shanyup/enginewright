@@ -21,6 +21,7 @@
   ],
   "Plugins": [
     { "Name": "EnhancedInput", "Enabled": true },
-    { "Name": "DataValidation", "Enabled": true }
+    { "Name": "DataValidation", "Enabled": true },
+    { "Name": "GameplayTagsEditor", "Enabled": true }
   ]
 }
