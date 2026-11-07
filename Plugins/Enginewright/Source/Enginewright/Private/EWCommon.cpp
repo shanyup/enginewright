@@ -281,9 +281,13 @@ namespace EW
 		FString Path = InPath;
 		int32 Dot;
 		if (Path.FindChar(TEXT('.'), Dot)) { Path = Path.Left(Dot); }
-		if (FPackageName::DoesPackageExist(Path)) { return true; }
 		UPackage* Pkg = FindPackage(nullptr, *Path);
-		if (!Pkg) { return false; }
+		if (!Pkg)
+		{
+			// Not loaded: ask the file system directly (the package-name cache keeps deleted packages).
+			FString File;
+			return FPackageName::TryConvertLongPackageNameToFilename(Path, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File);
+		}
 		UObject* Asset = StaticFindObject(UObject::StaticClass(), Pkg, *FPackageName::GetShortName(Path));
 		return IsValid(Asset);
 	}
