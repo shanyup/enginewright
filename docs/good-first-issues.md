@@ -21,3 +21,15 @@ Let `screenshot` take `width` and `height` (validated, 64-4096) and check the PN
 ## 5. Docs: one page per client
 
 Short setup pages for Claude Code, Codex, Cursor, VS Code and Hermes under `docs/clients/`, using the files in `Saved/Enginewright/clients/`.
+
+## 6. `widget_tree`: filter by class
+
+Add an optional `class` filter (e.g. only `Button` widgets, subclasses included). Extend `tests/test_umg.py`.
+
+## 7. `gameplay_tags_list`: show where a tag is used
+
+Add `withReferencers: true` to list the assets that reference each tag (the asset registry already knows). Extend `tests/test_tags.py`.
+
+## 8. `ui_state`: include text blocks
+
+Add an option to list visible text (TextBlock / CommonTextBlock) with its rectangle, so a test can assert what a screen says. Extend `tests/test_ui.py`.
