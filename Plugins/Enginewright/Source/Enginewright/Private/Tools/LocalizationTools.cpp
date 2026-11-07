@@ -181,7 +181,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 				{
 					FString V;
 					if (FString(*KV.Key).TrimStartAndEnd().IsEmpty()) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("Entry keys cannot be empty.")); }
-					if (!KV.Value.IsValid() || !KV.Value->TryGetString(V)) { return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Entry '%s' must be a string."), *FString(*KV.Key))); }
+					if (!KV.Value.IsValid() || KV.Value->Type != EJson::String || !KV.Value->TryGetString(V)) { return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Entry '%s' must be a string."), *FString(*KV.Key))); }
 				}
 			}
 
