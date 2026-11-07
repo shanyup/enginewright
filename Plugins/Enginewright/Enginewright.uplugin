@@ -1,0 +1,20 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0-dev",
+  "FriendlyName": "Enginewright",
+  "Description": "Native MCP server inside the Unreal Editor. No Python, Node or proxy. Strict, verified edits.",
+  "Category": "Editor",
+  "CreatedBy": "Shanyup Studios",
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "EnabledByDefault": true,
+  "Modules": [
+    {
+      "Name": "Enginewright",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit",
+      "PlatformAllowList": [ "Win64", "Mac", "Linux" ]
+    }
+  ]
+}

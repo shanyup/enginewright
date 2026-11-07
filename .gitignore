@@ -1,0 +1,31 @@
+# Unreal build output (plugin or host project)
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local configuration and secrets (Enginewright writes its token to Saved/Enginewright/)
+token
+client-config.json
+.env
+.env.*
+*.local
+*.local.*
+
+# Release packaging output (zips go to GitHub Releases, not git)
+dist/
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.user
+.DS_Store
+Thumbs.db
