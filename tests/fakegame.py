@@ -1,7 +1,7 @@
 """A stand-in for a game, used by test_game.py (game_run) instead of a real game.
 
 Called as: python fakegame.py <url> [-ResX=W -ResY=H ...] -abslog=<file> ...
-The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|nolog|quiet, Shots=<dir> (writes one PNG
+The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|slowdone|nolog|quiet, Shots=<dir> (writes one PNG
 of the requested size there), Mangle=1 (logs a command line with the URL cut at the first '=', like a broken
 batch file), Code=<n> (exit code).
 """
@@ -56,6 +56,11 @@ elif mode == "hang":
 else:
     say("SELFTEST Logic PASSED (12/12)")
 if mode == "passhang":
+    say("SELFTEST DONE")
+    time.sleep(120)
+if mode == "slowdone":
+    # Every line comes after a pause, so each read of the log ends with a line break: done must still be seen.
+    time.sleep(1.5)
     say("SELFTEST DONE")
     time.sleep(120)
 log.close()

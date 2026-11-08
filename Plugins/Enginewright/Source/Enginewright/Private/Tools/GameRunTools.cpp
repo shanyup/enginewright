@@ -311,8 +311,12 @@ namespace
 		if (!ReadShared(R.Log, R.Text, R.LogSize)) { return; }
 		TArray<FString> Lines;
 		R.Text.ParseIntoArrayLines(Lines, false);
-		// The last line may still be half written: scan it again next time.
-		const int32 Complete = R.Text.EndsWith(TEXT("\n")) ? Lines.Num() : Lines.Num() - 1;
+		// The last entry is either a line that may still be half written (no line break at the end) or, when the text
+		// ends with a break, possibly the empty text after it. Neither counts as scanned: counting the empty entry
+		// made the first line of the next write invisible to done/require (seen with HighResShot's log line).
+		const bool bEndsWithBreak = R.Text.EndsWith(TEXT("\n")) || R.Text.EndsWith(TEXT("\r"));
+		int32 Complete = Lines.Num();
+		if (Complete > 0 && (!bEndsWithBreak || Lines.Last().IsEmpty())) { --Complete; }
 		for (int32 i = R.LinesScanned; i < Complete; ++i)
 		{
 			const FString& L = Lines[i];

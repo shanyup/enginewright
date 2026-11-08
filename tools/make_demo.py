@@ -104,7 +104,8 @@ def record(a):
     step("Stop Play In Editor", "pie_stop", {}, settle=1)
     # The game itself, outside the editor, at two resolutions; then both screenshots side by side.
     r = c.call("game_run", {"url": "/Engine/Maps/Templates/Template_Default?Demo=1", "resolutions": ["1280x720", "1024x768"],
-                            "args": ["-ExecCmds=HighResShot 1"], "done": "Screenshot", "doneGrace": 5, "filter": ["Screenshot"],
+                            "args": ["-ExecCmds=HighResShot 1"], "pass": ["High resolution screenshot saved"], "done": "High resolution screenshot saved",
+                            "doneGrace": 5, "filter": ["Screenshot"],
                             "timeout": 600, "wait": 900}, timeout=1000)
     (out / "game_run.json").write_text(json.dumps(r, indent=1), encoding="utf-8")
     shots = [((run.get("screenshots") or [{}])[0]).get("path") for run in (r.get("data") or {}).get("runs", [])]

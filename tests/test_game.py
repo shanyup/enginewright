@@ -98,6 +98,11 @@ r = fake("/Game/Maps/Test?Mode=passhang", done="SELFTEST DONE", doneGrace=1, tim
 check("passed but did not quit -> PASSED, stopped after done (reported, not hidden)", r["ok"] and run0(r).get("verdict") == "PASSED"
       and run0(r).get("stopReason") == "DONE_BUT_NOT_EXITED" and run0(r).get("seconds", 99) < 30, r)
 
+r = fake("/Game/Maps/Test?Mode=slowdone", done="SELFTEST DONE", doneGrace=1, require="SELFTEST Logic start", requireWithin=20,
+         timeout=60, **{"pass": ["PASSED"]})
+check("done and require lines written after a pause are seen (first line of a new log write)", r["ok"]
+      and run0(r).get("stopReason") == "DONE_BUT_NOT_EXITED" and run0(r).get("seconds", 99) < 30, r)
+
 r = fake("/Game/Maps/Test?Mode=pass?Mangle=1", **{"pass": ["PASSED"]})
 check("URL cut on the way (like a broken .bat) -> URL_MISMATCH, game stopped", run0(r).get("verdict") == "URL_MISMATCH", r)
 
@@ -200,11 +205,13 @@ check("failed compose writes no output", not (TMP / "x.png").exists())
 # ---------------------------------------------------------------- the real game (optional)
 if os.environ.get("ENGINEWRIGHT_TEST_GAME") == "1":
     r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default?EWProbe=1", "resolutions": ["1280x720"],
-                       "args": ["-ExecCmds=HighResShot 1"], "done": "Screenshot", "doneGrace": 5, "filter": ["Screenshot"],
-                       "timeout": 900, "wait": 900}, timeout=1000)
+                       "args": ["-ExecCmds=HighResShot 1"], "pass": ["High resolution screenshot saved"], "done": "High resolution screenshot saved",
+                       "doneGrace": 5, "filter": ["Screenshot"], "timeout": 900, "wait": 900}, timeout=1000)
     check("real game: URL confirmed in its log", run0(r).get("urlConfirmed") is True, r)
     pngs = run0(r).get("screenshots", [])
     check("real game: HighResShot PNG collected at 1280x720", any(s.get("width") == 1280 and s.get("height") == 720 for s in pngs), r)
+    check("real game: PASSED and stopped by done, not by the timeout", run0(r).get("verdict") == "PASSED"
+          and run0(r).get("stopReason") == "DONE_BUT_NOT_EXITED" and not run0(r).get("timedOut"), r)
 else:
     print("SKIP real game run (set ENGINEWRIGHT_TEST_GAME=1)")
 
