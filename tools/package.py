@@ -108,7 +108,7 @@ def main():
         shutil.rmtree(build.parent)
     sha = hashlib.sha256(zpath.read_bytes()).hexdigest()
     # Same format as sha256sum, so `sha256sum -c` (or Get-FileHash) can check the download.
-    zpath.with_name(zpath.name + ".sha256").write_text(f"{sha}  {zpath.name}\n", encoding="utf-8")
+    zpath.with_name(zpath.name + ".sha256").write_bytes(f"{sha}  {zpath.name}\n".encode())  # LF only: sha256sum -c rejects CRLF
     print(f"OK {zpath} ({n} files, {zpath.stat().st_size // 1024} KB)\nSHA-256 {sha}")
 
 
