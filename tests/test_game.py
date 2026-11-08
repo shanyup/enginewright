@@ -52,6 +52,20 @@ s = meta("search", {"query": "run game resolution screenshots"})
 check("search finds game_run", s["ok"] and any(x["name"] == "game_run" for x in s["data"]["results"][:3]), s)
 s = meta("search", {"query": "side by side images"})
 check("search finds image_compose", s["ok"] and any(x["name"] == "image_compose" for x in s["data"]["results"][:3]), s)
+V03 = ["widget_create", "widget_tree", "widget_get", "widget_add", "widget_set", "widget_remove", "widget_render", "ui_state", "ui_click",
+       "ui_open", "ui_close", "ui_input_type", "ui_input_audit", "gameplay_tags_list", "gameplay_tag_add", "gameplay_tag_remove",
+       "pie_actors", "pie_net_emulation", "class_measure", "screen_coverage", "asset_rename", "stringtable_list", "stringtable_get",
+       "stringtable_set", "stringtable_compare", "loc_culture", "game_run", "game_run_status", "image_compose"]
+undescribed = []
+for n in V03:
+    d = meta("describe", {"name": n})
+    if not d["ok"]:
+        undescribed.append(n)
+        continue
+    props = d["data"]["inputSchema"].get("properties", {})
+    undescribed += [f"{n}.{k}" for k, v in props.items() if not v.get("description")]
+    undescribed += [f"{n}.required:{k}" for k in d["data"]["inputSchema"].get("required", []) if k not in props]
+check("every v0.3 tool argument has a description in its schema", not undescribed, undescribed)
 
 # ---------------------------------------------------------------- game_run with a stand-in game
 r = fake("/Game/Maps/Test?Mode=pass?Shots={shots}", resolutions=["320x200", "160x90"],

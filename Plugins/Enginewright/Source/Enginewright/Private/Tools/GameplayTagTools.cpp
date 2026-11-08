@@ -88,7 +88,7 @@ void RegisterGameplayTagTools(FEWRegistry& R)
 		TEXT("Add a Gameplay Tag to a tag ini (default Config/DefaultGameplayTags.ini) and read it back. Fails on an invalid name (with the fixed form suggested) or when the tag already exists explicitly."),
 		TEXT(R"({"type":"object","properties":{
 			"tag":{"type":"string","description":"e.g. Item.Food.Apple"},
-			"comment":{"type":"string"},
+			"comment":{"type":"string","description":"Optional developer comment stored with the tag."},
 			"source":{"type":"string","description":"Tag ini file name, e.g. DefaultGameplayTags.ini (default) or a file under Config/Tags."},
 			"allowAnyCharacters":{"type":"boolean","description":"Accept every name the engine accepts (spaces, symbols). Default false."}},
 			"required":["tag"]})"),
@@ -142,7 +142,7 @@ void RegisterGameplayTagTools(FEWRegistry& R)
 
 	R.Register(TEXT("gameplay_tag_remove"),
 		TEXT("Remove an explicit Gameplay Tag from its ini. Refused while assets reference it (the reply lists them) or when it is only implied by child tags."),
-		TEXT(R"({"type":"object","properties":{"tag":{"type":"string"}},"required":["tag"]})"),
+		TEXT(R"({"type":"object","properties":{"tag":{"type":"string","description":"Full tag name, e.g. Item.Food.Apple."}},"required":["tag"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

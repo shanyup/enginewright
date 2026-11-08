@@ -213,7 +213,7 @@ void RegisterAssetTools(FEWRegistry& R)
 	R.Register(TEXT("asset_rename"),
 		TEXT("Rename or move an asset. Every referencer is updated and the redirector left behind is fixed up and removed. Also reports text that still names the old asset (strings, names, IDs, paths in DataTables, Blueprint defaults, data assets): a redirector cannot fix those. dryRun reports referencers and such text without renaming."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string"},
+			"source":{"type":"string","description":"Asset to rename or move, e.g. /Game/Items/BP_Apple_Old."},
 			"destination":{"type":"string","description":"Full new path, e.g. /Game/Items/BP_Apple."},
 			"dryRun":{"type":"boolean","description":"Only report what would change (default false)."},
 			"textSearchFolder":{"type":"string","description":"Where to look for text naming the old asset; default /Game."}},

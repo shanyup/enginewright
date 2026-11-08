@@ -124,7 +124,7 @@ void RegisterMultiplayerTools(FEWRegistry& R)
 		TEXT("Multiplayer check: list the actors of a class in every Play In Editor world (server and each client) with net roles, owner and chosen property values, so you can assert 'client 2 sees X'. With minCount and timeout, waits until every world has at least minCount of them (replication delay)."),
 		TEXT(R"({"type":"object","properties":{
 			"class":{"type":"string","description":"Short class name, /Script path or Blueprint path; subclasses match too."},
-			"tag":{"type":"string"},
+			"tag":{"type":"string","description":"Only actors with this actor tag."},
 			"replicatedOnly":{"type":"boolean","description":"Skip actors that do not replicate (for example a client's local spectator pawn). Default false."},
 			"properties":{"type":"array","items":{"type":"string"},"description":"Property names to read on each actor, e.g. [\"Health\"]."},
 			"minCount":{"type":"integer","description":"Wait until every world has at least this many."},
@@ -197,10 +197,10 @@ void RegisterMultiplayerTools(FEWRegistry& R)
 		TEXT("Emulate a bad network in a multiplayer Play In Editor session: profile off / average / bad, or exact values (lag in ms, loss in percent). Applied to the server and every client net driver, then read back."),
 		TEXT(R"({"type":"object","properties":{
 			"profile":{"type":"string","enum":["off","average","bad"],"description":"average = 30-60 ms, 1% loss; bad = 100-200 ms, 5% loss (both directions)."},
-			"lagMin":{"type":"integer"},"lagMax":{"type":"integer"},"loss":{"type":"integer"},
-			"incomingLagMin":{"type":"integer"},"incomingLagMax":{"type":"integer"},"incomingLoss":{"type":"integer"},
+			"lagMin":{"type":"integer","description":"Outgoing lag minimum, ms."},"lagMax":{"type":"integer","description":"Outgoing lag maximum, ms."},"loss":{"type":"integer","description":"Outgoing packet loss, percent."},
+			"incomingLagMin":{"type":"integer","description":"Incoming lag minimum, ms."},"incomingLagMax":{"type":"integer","description":"Incoming lag maximum, ms."},"incomingLoss":{"type":"integer","description":"Incoming packet loss, percent."},
 			"duplicate":{"type":"integer","description":"Percent of packets sent twice."},
-			"reorder":{"type":"boolean"}}})"),
+			"reorder":{"type":"boolean","description":"Deliver packets out of order."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

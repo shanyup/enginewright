@@ -232,7 +232,7 @@ void RegisterUMGTools(FEWRegistry& R)
 
 	R.Register(TEXT("widget_tree"),
 		TEXT("Read a Widget Blueprint's widget tree: every widget with class, parent, index, variable flag, visibility, text (TextBlock) and slot layout (canvas position, size, anchors, alignment; padding and alignment for box slots)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -253,8 +253,8 @@ void RegisterUMGTools(FEWRegistry& R)
 	R.Register(TEXT("widget_get"),
 		TEXT("Read property values of one widget (all editable ones, or the names given) plus its slot."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"name":{"type":"string","description":"Widget name."},
-			"properties":{"type":"array","items":{"type":"string"}}},
+			"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},"name":{"type":"string","description":"Widget name."},
+			"properties":{"type":"array","items":{"type":"string"},"description":"Property names to read; default every editable one."}},
 			"required":["path","name"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -275,8 +275,8 @@ void RegisterUMGTools(FEWRegistry& R)
 	R.Register(TEXT("widget_add"),
 		TEXT("Add a widget (TextBlock, Button, Image, VerticalBox, HorizontalBox, Overlay, SizeBox, Border, Spacer, a Widget Blueprint...) under a panel, with property values and slot layout checked like object_set; compile, save, and return the widget as read back. Without a parent it goes under the root (or becomes the root when there is none)."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"class":{"type":"string"},
+			"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},
+			"class":{"type":"string","description":"Widget class: TextBlock, Button, Image, VerticalBox, ... or a Widget Blueprint path."},
 			"name":{"type":"string","description":"Unique widget name."},
 			"parent":{"type":"string","description":"Panel widget name; default the root."},
 			"index":{"type":"integer","description":"Insert position among the parent's children; default last."},
@@ -354,9 +354,9 @@ void RegisterUMGTools(FEWRegistry& R)
 	R.Register(TEXT("widget_set"),
 		TEXT("Change one widget's properties and/or slot layout (same rules as widget_add), then compile, save and read back. Nothing changes when any value is invalid."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"name":{"type":"string"},
-			"properties":{"type":"object"},"slot":{"type":"object"},
-			"isVariable":{"type":"boolean"}},
+			"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},"name":{"type":"string","description":"Widget name."},
+			"properties":{"type":"object","description":"Property -> value, checked like object_set, e.g. {\"Text\":\"Play\"}."},"slot":{"type":"object","description":"Slot layout values for the parent panel, e.g. {\"Padding\":{\"Left\":8}}."},
+			"isVariable":{"type":"boolean","description":"Expose the widget as a Blueprint variable."}},
 			"required":["path","name"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -405,7 +405,7 @@ void RegisterUMGTools(FEWRegistry& R)
 
 	R.Register(TEXT("widget_remove"),
 		TEXT("Remove a widget and everything under it from a Widget Blueprint; compile and save. Lists the removed widgets."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path","name"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},"name":{"type":"string","description":"Widget name; its children are removed too."}},"required":["path","name"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -432,7 +432,7 @@ void RegisterUMGTools(FEWRegistry& R)
 	R.Register(TEXT("widget_render"),
 		TEXT("Render a Widget Blueprint to a PNG at a given resolution (no Play In Editor needed): saves it under Saved/Enginewright/Screenshots and returns it as an image. Use it to compare a screen with a mock-up."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},
 			"width":{"type":"integer","description":"Default 1920."},"height":{"type":"integer","description":"Default 1080."},
 			"inline":{"type":"boolean","description":"Return the image in the reply (default true)."},
 			"file":{"type":"string","description":"PNG path; default a new file under Saved/Enginewright/Screenshots."}},

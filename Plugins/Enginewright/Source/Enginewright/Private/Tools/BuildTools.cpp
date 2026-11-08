@@ -2,6 +2,7 @@
 #include "EWCommon.h"
 
 #include "Editor.h"
+#include "Editor/EditorPerformanceSettings.h"
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
@@ -28,6 +29,28 @@ namespace
 		TArray<FString> Out;
 		for (UPackage* P : Dirty) { if (P) { Out.Add(P->GetName()); } }
 		return Out;
+	}
+
+	/**
+	 * Automation commands wait for an interactive frame rate (>= 10 FPS). An editor in the background is throttled
+	 * below that, so an agent driving a background editor would time out. Keep the editor at full speed while
+	 * automation tools wait; the setting is restored afterwards and never saved.
+	 */
+	int32 GNoThrottle = 0;
+	bool GOldThrottle = true;
+	void NoThrottleBegin()
+	{
+		UEditorPerformanceSettings* S = GetMutableDefault<UEditorPerformanceSettings>();
+		if (GNoThrottle++ == 0) { GOldThrottle = S->bThrottleCPUWhenNotForeground; S->bThrottleCPUWhenNotForeground = false; }
+	}
+	void NoThrottleEnd()
+	{
+		if (GNoThrottle > 0 && --GNoThrottle == 0) { GetMutableDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground = GOldThrottle; }
+	}
+	FEWDone Unthrottled(FEWDone Done)
+	{
+		NoThrottleBegin();
+		return [Done](FEWResult R) { NoThrottleEnd(); Done(MoveTemp(R)); };
 	}
 
 	/** Parses the build log written by the restart script. */
@@ -192,6 +215,7 @@ void RegisterBuildTools(FEWRegistry& R)
 			if (EW::IsPlaying()) { Done(FEWResult::Error(TEXT("PIE_RUNNING"), TEXT("Stop Play In Editor first (pie_stop)."))); return; }
 			const FString Filter = EW::Str(Args, TEXT("filter")).TrimStartAndEnd();
 			if (Filter.IsEmpty() || Filter.Contains(TEXT(";")) || Filter.Contains(TEXT("|"))) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("filter must be one test name prefix."))); return; }
+			Done = Unthrottled(MoveTemp(Done));
 			const uint64 Seq = EW::LogSeq();
 			GEditor->Exec(GEditor->GetEditorWorldContext().World(), *FString::Printf(TEXT("Automation RunTests %s"), *Filter));
 			const float Timeout = (float)EW::Num(Args, TEXT("timeout"), 300);
@@ -255,6 +279,7 @@ void RegisterBuildTools(FEWRegistry& R)
 		false,
 		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
 		{
+			Done = Unthrottled(MoveTemp(Done));
 			const uint64 Seq = EW::LogSeq();
 			GEditor->Exec(GEditor->GetEditorWorldContext().World(), TEXT("Automation List"));
 			const FString Filter = EW::Str(Args, TEXT("filter"));

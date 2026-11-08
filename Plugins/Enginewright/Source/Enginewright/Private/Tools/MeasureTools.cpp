@@ -107,7 +107,7 @@ void RegisterMeasureTools(FEWRegistry& R)
 			"actor":{"type":"string","description":"Actor label or name in the play world (wildcards allowed); the first match is used."},
 			"class":{"type":"string","description":"Or: the first actor of this class."},
 			"player":{"type":"integer","description":"Local player index, default 0."},
-			"collidingOnly":{"type":"boolean"}}})"),
+			"collidingOnly":{"type":"boolean","description":"Measure only components that collide (default false: every visible component)."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

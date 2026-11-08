@@ -350,9 +350,9 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 	R.RegisterAsync(TEXT("ui_click"),
 		TEXT("Click a visible button in Play In Editor, found by widget name or label (wildcards allowed). method click (default) first checks that no other hit-testable widget is drawn over the button center (else COVERED), then presses the Slate button (press + click, as a pointer or gamepad accept does); method event fires the UMG OnClicked directly, even when covered. Returns the UI state after settleSeconds."),
 		TEXT(R"({"type":"object","properties":{
-			"player":{"type":"integer"},
+			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
 			"button":{"type":"string","description":"Widget name or label, e.g. Play or *Settings*."},
-			"method":{"type":"string","enum":["click","event"]},
+			"method":{"type":"string","enum":["click","event"],"description":"click (default): checked like a real click, refused when covered; event: fire OnClicked directly."},
 			"settleSeconds":{"type":"number","description":"Wait after the click before reading the UI, default 0.3."}},
 			"required":["button"]})"),
 		false,
@@ -429,7 +429,7 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 		TEXT("Open a widget class (Widget Blueprint or C++ UserWidget) on a Play In Editor player's screen: creates it for that player and adds it to the viewport; a CommonUI activatable widget is also activated. With stack (name of a running CommonActivatableWidgetStack / Queue, see ui_state stacks) the activatable widget is pushed onto that stack instead, as the game's own UI flow would do. Use it to test one screen in isolation."),
 		TEXT(R"({"type":"object","properties":{
 			"class":{"type":"string","description":"Widget Blueprint path or class name."},
-			"player":{"type":"integer"},
+			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
 			"stack":{"type":"string","description":"Optional: push onto this activatable widget stack (widget name or owner class name)."},
 			"zOrder":{"type":"integer","description":"Default 10."}},
 			"required":["class"]})"),
@@ -500,7 +500,7 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 
 	R.Register(TEXT("ui_close"),
 		TEXT("Remove a widget from a Play In Editor player's screen by widget name (as listed by ui_state viewportWidgets) or class name."),
-		TEXT(R"({"type":"object","properties":{"widget":{"type":"string"},"player":{"type":"integer"}},"required":["widget"]})"),
+		TEXT(R"({"type":"object","properties":{"widget":{"type":"string","description":"Widget name or class name (wildcards allowed), as listed by ui_state."},"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."}},"required":["widget"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -552,7 +552,7 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 	R.Register(TEXT("ui_input_type"),
 		TEXT("Read or switch a Play In Editor player's CommonUI input type (MouseAndKeyboard, Gamepad, Touch), as if the player picked up a gamepad. Use it to check gamepad glyphs, focus and button hints without a controller. Needs the CommonUI plugin."),
 		TEXT(R"({"type":"object","properties":{
-			"player":{"type":"integer"},
+			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
 			"type":{"type":"string","enum":["MouseAndKeyboard","Gamepad","Touch"],"description":"Omit to only read the current type."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult

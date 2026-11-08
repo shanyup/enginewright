@@ -111,7 +111,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 		TEXT("Read entries of a String Table (registry id or asset path): key, source string and, when the current language translates it, the display string. Filter by keys or a key wildcard."),
 		TEXT(R"({"type":"object","properties":{
 			"table":{"type":"string","description":"Registry id (ST_Events) or asset path (/Game/Text/ST_UI)."},
-			"keys":{"type":"array","items":{"type":"string"}},
+			"keys":{"type":"array","items":{"type":"string"},"description":"Only these keys; default every entry."},
 			"match":{"type":"string","description":"Key wildcard, e.g. Event.Loki*."},
 			"limit":{"type":"integer","description":"Default 200."}},
 			"required":["table"]})"),
@@ -160,9 +160,9 @@ void RegisterLocalizationTools(FEWRegistry& R)
 		TEXT(R"({"type":"object","properties":{
 			"path":{"type":"string","description":"String Table asset path, e.g. /Game/Text/ST_UI."},
 			"create":{"type":"boolean","description":"Create the asset when it does not exist (default false)."},
-			"namespace":{"type":"string"},
+			"namespace":{"type":"string","description":"String Table namespace (set on create or changed)."},
 			"entries":{"type":"object","description":"Key -> source string.","additionalProperties":{"type":"string"}},
-			"remove":{"type":"array","items":{"type":"string"}},
+			"remove":{"type":"array","items":{"type":"string"},"description":"Keys to remove."},
 			"save":{"type":"boolean","description":"Default true."}},
 			"required":["path"]})"),
 		true,
@@ -255,7 +255,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 	R.Register(TEXT("stringtable_compare"),
 		TEXT("Compare a source String Table with a translation table (registry ids or asset paths), read-only: keys missing from the translation, extra keys, empty translations, translations identical to the source (likely untranslated), and format arguments {x} or rich text tags <x> that differ between source and translation."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string"},"translation":{"type":"string"},
+			"source":{"type":"string","description":"Source String Table (path or asset name)."},"translation":{"type":"string","description":"Translated String Table to check against the source."},
 			"ignoreSame":{"type":"array","items":{"type":"string"},"description":"Key wildcards allowed to equal the source (names, numbers)."},
 			"limit":{"type":"integer","description":"Max listed per category, default 100."}},
 			"required":["source","translation"]})"),
