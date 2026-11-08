@@ -1,9 +1,11 @@
-"""Tests for Plugins/Enginewright/Scripts/ewtool.py (build / status / locks / run / test / compose).
+"""Tests for Plugins/Enginewright/Scripts/ewtool.py (build / status / locks), the optional command line helper
+for compiling while the editor is closed.
 
-Runs without the editor: game runs use a stand-in game (tests/ewtool_fakegame.py). The build checks use
-UnrealBuildTool on ENGINEWRIGHT_TEST_PROJECT (it needs a C++ editor target). If the project's editor is open,
-the build is expected to be refused with the editor named as the lock holder; otherwise the suite builds.
-Set ENGINEWRIGHT_TEST_GAME=1 to also start the real game once (UnrealEditor -game, a few minutes).
+Runs without the editor. ER-05 checks use a stand-in for UnrealBuildTool (EWTOOL_TEST_UBT): the caller of
+`build --wait` is killed the way agent tools kill a command (taskkill /T on its process tree, and closing a
+KILL_ON_JOB_CLOSE job object that forbids breakaway); the build must keep running and finish.
+The real build checks use UnrealBuildTool on ENGINEWRIGHT_TEST_PROJECT (it needs a C++ editor target). If the
+project's editor is open, the build is expected to be refused with the editor named as the lock holder.
 Everything is written under <project>/Saved/Enginewright/ and the system temp folder.
 """
 import json, os, pathlib, shutil, subprocess, sys, tempfile, time
@@ -11,14 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ewtest import PROJ, check, done
 
 HERE = pathlib.Path(__file__).resolve().parent
-SCRIPTS = HERE.parent / "Plugins" / "Enginewright" / "Scripts"
-TOOL = SCRIPTS / "ewtool.py"
-FAKE = HERE / "ewtool_fakegame.py"
-sys.path.insert(0, str(SCRIPTS))
-import ew_png  # noqa: E402
-
+TOOL = HERE.parent / "Plugins" / "Enginewright" / "Scripts" / "ewtool.py"
 UPROJECT = next(PROJ.glob("*.uproject"))
-TMP = pathlib.Path(tempfile.mkdtemp(prefix="ewtool_test_"))
+IS_WIN = os.name == "nt"
+# ER-05 checks use a throw-away project (no binaries, so an open editor of the test project does not lock it).
+FAKE_DIR = pathlib.Path(tempfile.mkdtemp(prefix="ewtool_er05_"))
+FAKE_PROJ = FAKE_DIR / "EWFake.uproject"
+FAKE_PROJ.write_text('{"FileVersion": 3, "EngineAssociation": "5.8"}', encoding="utf-8")
 
 
 def ew(*args, env=None, timeout=1800):
@@ -31,138 +32,117 @@ def ew(*args, env=None, timeout=1800):
         return p.returncode, {"raw": p.stdout[-2000:], "stderr": p.stderr[-2000:]}
 
 
-def fake(url, *extra):
-    return ew("run", "--project", str(UPROJECT), "--exe", sys.executable, "--exe-arg", str(FAKE), "--url", url, *extra)
+# A stand-in build: prints UBT-like progress for ~12 s, then succeeds.
+FAKE_UBT = json.dumps([sys.executable, "-c",
+                       "import time\nfor i in range(1, 7):\n    print(f'[{i}/6] Compile Module.Fake.{i}.cpp', flush=True); time.sleep(2)\n"
+                       "print('Result: Succeeded', flush=True)"])
 
 
-def gradient(path, w, h, seed):
-    px = bytearray(w * h * 4)
-    for y in range(h):
-        for x in range(w):
-            o = (y * w + x) * 4
-            px[o:o + 4] = bytes(((x * 7 + seed) & 255, (y * 5 + seed * 3) & 255, (x ^ y) & 255, 255))
-    ew_png.write_png(str(path), w, h, px)
-    return px
+def newest_state():
+    files = sorted((FAKE_DIR / "Saved/Enginewright/runs").glob("build-*.json"), key=lambda f: f.stat().st_mtime)
+    return files[-1] if files else None
 
 
-# ---------------------------------------------------------------- compose
-a = gradient(TMP / "a.png", 120, 80, 1)
-b = gradient(TMP / "b.png", 120, 80, 50)
-c_ = gradient(TMP / "c.png", 90, 60, 100)
-d = gradient(TMP / "d.png", 90, 60, 150)
-out = TMP / "cmp.png"
-code, r = ew("compose", "--out", str(out), "--cols", "Web,Oyun", "--title", "Karşılaştırma ğüşİıöç", "--cell-width", "0",
-             "--row", "1920", str(TMP / "a.png"), str(TMP / "b.png"), "--row", "1280", str(TMP / "c.png"), str(TMP / "d.png"))
-check("compose 2x2 with column/row labels and title -> ok", code == 0 and r.get("ok") and len(r.get("cells", [])) == 4, r)
-if r.get("ok"):
-    W, H, px = ew_png.read_png(str(out))
-    check("output file decodes and has the reported size", [W, H] == r["size"], [W, H, r["size"]])
-    exact = True
-    for cell, src in zip(r["cells"], (a, b, c_, d)):
-        x0, y0, cw, chh = cell["rect"]
-        for yy in (0, chh // 2, chh - 1):
-            if px[((y0 + yy) * W + x0) * 4:((y0 + yy) * W + x0 + cw) * 4] != src[yy * cw * 4:(yy + 1) * cw * 4]:
-                exact = False
-    check("each cell holds its source image pixel for pixel (independent read-back)", exact, r["cells"])
-    check("Turkish label characters are all in the font", r["unsupportedChars"] == "", r["unsupportedChars"])
-    check("cells keep row/column labels and source sizes",
-          r["cells"][0]["colLabel"] == "Web" and r["cells"][3]["rowLabel"] == "1280" and r["cells"][2]["sourceSize"] == [90, 60], r["cells"])
+def start_caller(extra_flags=0):
+    before = newest_state()
+    p = subprocess.Popen([sys.executable, str(TOOL), "build", "--project", str(FAKE_PROJ), "--target", "EWFakeEditor", "--wait", "600", "--lock-wait", "0"],
+                         env=dict(os.environ, EWTOOL_TEST_UBT=FAKE_UBT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=extra_flags)
+    return p, before
 
-code, r2 = ew("compose", "--out", str(TMP / "pure.png"), "--cols", "Web,Oyun", "--title", "Karşılaştırma ğüşİıöç", "--cell-width", "0",
-              "--row", "1920", str(TMP / "a.png"), str(TMP / "b.png"), "--row", "1280", str(TMP / "c.png"), str(TMP / "d.png"),
-              env={"EW_NO_PILLOW": "1"})
-check("compose without Pillow (pure Python decoder) gives the same image",
-      code == 0 and r2.get("decoder") == "python" and ew_png.read_png(str(TMP / "pure.png"))[2] == ew_png.read_png(str(out))[2], r2)
 
-code, r = ew("compose", "--out", str(TMP / "two.png"), str(TMP / "a.png"), str(TMP / "c.png"), "--cell-width", "60")
-check("compose one row, scaled to --cell-width", code == 0 and r.get("ok") and all(c["rect"][2] == 60 for c in r["cells"]), r)
-code, r = ew("compose", "--out", str(TMP / "x.png"), str(TMP / "a.png"), str(TMP / "missing.png"))
-check("missing image -> NOT_FOUND, exit 2", code == 2 and r.get("error") == "NOT_FOUND", r)
-(TMP / "bad.png").write_bytes(b"not a png at all, just text")
-code, r = ew("compose", "--out", str(TMP / "x.png"), str(TMP / "a.png"), str(TMP / "bad.png"))
-check("non-PNG file -> BAD_IMAGE", code == 2 and r.get("error") == "BAD_IMAGE", r)
-code, r = ew("compose", "--out", str(TMP / "x.png"), "--cols", "A,B,C", str(TMP / "a.png"), str(TMP / "b.png"))
-check("column label count must match -> BAD_IMAGE", code == 2 and r.get("error") == "BAD_IMAGE", r)
-code, r = ew("compose", "--out", str(TMP / "x.png"), "--row", "only-label")
-check("--row without images -> BAD_ARGS", code == 2 and r.get("error") == "BAD_ARGS", r)
-check("failed compose writes no output", not (TMP / "x.png").exists())
+def wait_for_child(before, timeout=60):
+    """Waits until the new build's worker has started the build command. Returns the state file."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        st = newest_state()
+        if st and st != before:
+            try:
+                d = json.loads(st.read_text(encoding="utf-8"))
+                if d.get("childPid"):
+                    return st, d
+            except ValueError:
+                pass
+        time.sleep(0.3)
+    return None, {}
 
-try:
-    from PIL import Image
-    Image.new("P", (40, 30), 7).save(TMP / "pal.png")
-    Image.new("LA", (40, 30), (90, 200)).save(TMP / "la.png")
-    im = Image.frombytes("RGB", (64, 48), bytes((i * 37) & 255 for i in range(64 * 48 * 3)))
-    im.save(TMP / "noise.png", optimize=True)  # exercises Sub/Up/Average/Paeth filters
-    same = all(ew_png._read_png_pure(str(TMP / f))[2] == bytearray(Image.open(TMP / f).convert("RGBA").tobytes())
-               for f in ("pal.png", "la.png", "noise.png"))
-    check("pure Python decoder matches Pillow (palette, gray+alpha, filtered RGB)", same)
-except ImportError:
-    print("SKIP decoder vs Pillow comparison (Pillow not installed)")
 
-# ---------------------------------------------------------------- run / test with a stand-in game
-code, r = fake("/Game/Maps/Test?Mode=pass?Shots={shots}", "--res", "320x200", "--res", "160x90",
-               "--filter", "SELFTEST", "--filter", "[Save]", "--pass", r"SELFTEST .*PASSED", "--fail", r"SELFTEST .*FAILED")
-runs = r.get("runs", [])
-check("run at two resolutions -> PASSED each, exit 0", code == 0 and r.get("verdicts") == {"320x200": "PASSED", "160x90": "PASSED"}, r)
-if len(runs) == 2:
-    r0 = runs[0]
-    check("the URL reached the game unchanged (checked in the game log)", all(x["urlConfirmed"] for x in runs), runs)
-    check("kept lines: SELFTEST and [Save] only", any("[Save] slot=Test01" in l for l in r0["lines"]) and
-          any("PASSED" in l for l in r0["lines"]) and not any("noise" in l for l in r0["lines"]), r0["lines"])
-    shots = [x["screenshots"] for x in runs]
-    check("PNG collected per run with its real size", [(s[0]["width"], s[0]["height"], s[0]["matchesRes"]) for s in shots if s]
-          == [(320, 200, True), (160, 90, True)], shots)
-    check("resolution passed as -ResX/-ResY", "-ResX=320" in r0["command"] and "-ResY=200" in r0["command"], r0["command"])
-    check("summary.json written", pathlib.Path(r["summary"]).is_file(), r.get("summary"))
+def build_id(state_file):
+    return state_file.name[len("build-"):-len(".json")]
 
-code, r = fake("/Game/Maps/Test?Mode=fail", "--filter", "SELFTEST", "--pass", "PASSED", "--fail", "FAILED")
-run0 = (r.get("runs") or [{}])[0]
-check("failing self-test -> FAILED with the failure line, exit 1", code == 1 and run0.get("verdict") == "FAILED"
-      and any("expected 3 got 2" in l for l in run0.get("failLines", [])), r)
 
-t0 = time.time()
-code, r = fake("/Game/Maps/Test?Mode=hang", "--pass", "PASSED", "--timeout", "4")
-run0 = (r.get("runs") or [{}])[0]
-check("game that never ends -> TIMEOUT, stopped", code == 1 and run0.get("verdict") == "TIMEOUT" and run0.get("exited") is False
-      and time.time() - t0 < 40, r)
+# ---------------------------------------------------------------- ER-05: the build outlives its caller
+if IS_WIN:
+    import ctypes
+    from ctypes import wintypes as wt
 
-code, r = fake("/Game/Maps/Test?Mode=passhang", "--pass", "PASSED", "--done", "SELFTEST DONE", "--done-grace", "1", "--timeout", "60")
-run0 = (r.get("runs") or [{}])[0]
-check("passed but did not quit -> PASSED, stopped after --done (reported, not hidden)", code == 0 and run0.get("verdict") == "PASSED"
-      and run0.get("stopReason") == "DONE_BUT_NOT_EXITED" and run0.get("seconds", 99) < 30, r)
+    # 1) Caller killed with its process tree (taskkill /T /F), as an agent tool does on its time limit.
+    caller, before = start_caller()
+    st, d = wait_for_child(before)
+    check("ER-05 setup: build worker started the build command", st is not None, d)
+    if st:
+        check("worker is detached outside the caller's tree and job (detached: wmi)", d.get("detached") == "wmi", d)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(caller.pid)], capture_output=True)
+        time.sleep(1)
+        check("caller is gone after taskkill /T", caller.poll() is not None)
+        code, r = ew("status", "--project", str(FAKE_PROJ), "--id", build_id(st), "--wait", "120")
+        check("ER-05: caller tree killed -> build keeps running and succeeds", code == 0 and r.get("status") == "succeeded"
+              and r.get("actions") == "6/6", r)
 
-code, r = fake("/Game/Maps/Test?Mode=pass?Mangle=1", "--pass", "PASSED")
-run0 = (r.get("runs") or [{}])[0]
-check("URL cut on the way (like a broken .bat) -> URL_MISMATCH, game stopped", code == 1 and run0.get("verdict") == "URL_MISMATCH", r)
+    # 2) Caller inside a KILL_ON_JOB_CLOSE job that forbids breakaway; the job is closed (killing everything in it).
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype = wt.HANDLE
 
-code, r = fake("/Game/Maps/Test?Mode=quiet", "--require", "SELFTEST", "--require-within", "2", "--timeout", "60")
-run0 = (r.get("runs") or [{}])[0]
-check("test mode never engaged -> REQUIRED_LINE_MISSING, stopped early", code == 1 and run0.get("verdict") == "REQUIRED_LINE_MISSING"
-      and run0.get("seconds", 99) < 20, r)
+    class BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wt.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wt.DWORD), ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD),
+                    ("SchedulingClass", wt.DWORD)]
 
-code, r = fake("/Game/Maps/Test?Mode=crash", "--pass", "PASSED")
-run0 = (r.get("runs") or [{}])[0]
-check("crash -> CRASHED with the crash lines", code == 1 and run0.get("verdict") == "CRASHED" and run0.get("crashLines"), r)
+    class IOC(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in ("R", "W", "O", "RT", "WT", "OT")]
 
-code, r = fake("/Game/Maps/Test?Mode=pass?Code=0")
-check("no patterns, exit 0 -> EXITED_OK", code == 0 and (r.get("runs") or [{}])[0].get("verdict") == "EXITED_OK", r)
-code, r = fake("/Game/Maps/Test?Mode=pass?Code=5")
-check("no patterns, exit 5 -> EXIT_CODE", code == 1 and (r.get("runs") or [{}])[0].get("verdict") == "EXIT_CODE", r)
-code, r = fake("/Game/Maps/Test?Mode=nolog", "--pass", "PASSED", "--url-check-timeout", "5")
-check("game wrote no log -> URL_NOT_CONFIRMED", code == 1 and (r.get("runs") or [{}])[0].get("verdict") == "URL_NOT_CONFIRMED", r)
-code, r = fake("/Game/Maps/Test?Mode=pass?Note=a b=c?Empty=", "--pass", "PASSED")
-check("URL with spaces and '=' arrives intact", code == 0 and (r.get("runs") or [{}])[0].get("urlConfirmed") is True, r)
+    class EXT(ctypes.Structure):
+        _fields_ = [("Basic", BASIC), ("Io", IOC), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
-code, r = ew("test", "--project", str(UPROJECT), "--exe", sys.executable, "--exe-arg", str(FAKE), "--url", "/X?Mode=pass", "--no-build")
-check("test without --pass/--fail -> BAD_ARGS", code == 2 and r.get("error") == "BAD_ARGS", r)
-code, r = fake("/X?Mode=pass", "--res", "big")
-check("bad resolution -> BAD_ARGS", code == 2 and r.get("error") == "BAD_ARGS", r)
-code, r = fake("/X?Mode=pass?Dir={shot}")
-check("unknown placeholder -> BAD_ARGS naming the known ones", code == 2 and r.get("error") == "BAD_ARGS" and "{shot}" in r.get("message", ""), r)
-outdir = TMP / "dry"
-code, r = fake("/X?Mode=pass?Shots={shots}", "--res", "640x360", "--dry-run", "--out", str(outdir))
-check("--dry-run prints the command, starts nothing, creates no folder", code == 0 and r["runs"][0]["url"].endswith("/640x360/shots")
-      and "verdict" not in r["runs"][0] and not outdir.exists(), r)
+    job = k.CreateJobObjectW(None, None)
+    info = EXT()
+    info.Basic.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE, no BREAKAWAY_OK
+    k.SetInformationJobObject(wt.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+    caller, before = start_caller(extra_flags=0x00000004)  # CREATE_SUSPENDED: join the job before it runs
+    assigned = k.AssignProcessToJobObject(wt.HANDLE(job), wt.HANDLE(int(caller._handle)))
+    ctypes.WinDLL("ntdll").NtResumeProcess(wt.HANDLE(int(caller._handle)))
+    check("ER-05 setup: caller runs inside a job without breakaway", bool(assigned))
+    st, d = wait_for_child(before)
+    check("ER-05 setup: build worker started (job case)", st is not None, d)
+    if st:
+        k.CloseHandle(wt.HANDLE(job))  # kills every process in the job
+        time.sleep(1)
+        check("caller was killed by closing its job", caller.poll() is not None)
+        code, r = ew("status", "--project", str(FAKE_PROJ), "--id", build_id(st), "--wait", "120")
+        check("ER-05: caller's job closed -> build keeps running and succeeds", code == 0 and r.get("status") == "succeeded", r)
+
+    # 3) Old behaviour for comparison (v0.3 candidate, ER-05): a worker started by the caller itself (even with
+    #    CREATE_BREAKAWAY_FROM_JOB) dies with the job; status must say "lost", not "running".
+    job = k.CreateJobObjectW(None, None)
+    k.SetInformationJobObject(wt.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+    before = newest_state()
+    caller = subprocess.Popen([sys.executable, str(TOOL), "build", "--project", str(FAKE_PROJ), "--target", "EWFakeEditor", "--wait", "600", "--lock-wait", "0"],
+                              env=dict(os.environ, EWTOOL_TEST_UBT=FAKE_UBT, EWTOOL_SPAWN="plain"),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x00000004)
+    k.AssignProcessToJobObject(wt.HANDLE(job), wt.HANDLE(int(caller._handle)))
+    ctypes.WinDLL("ntdll").NtResumeProcess(wt.HANDLE(int(caller._handle)))
+    st, d = wait_for_child(before)
+    if st:
+        check("comparison run uses the old in-process spawn (no WMI)", d.get("detached") in ("none", "breakaway"), d)
+        k.CloseHandle(wt.HANDLE(job))
+        time.sleep(2)
+        code, r = ew("status", "--project", str(FAKE_PROJ), "--id", build_id(st))
+        check("a build killed with its caller is reported as lost (with a hint), not as running", code == 1 and r.get("status") == "lost"
+              and r.get("hint"), r)
+else:
+    print("SKIP ER-05 job/tree checks (Windows only)")
 
 # ---------------------------------------------------------------- locks and build (UnrealBuildTool)
 code, r = ew("locks", "--project", str(UPROJECT))
@@ -172,7 +152,7 @@ if editor_open:
     code, r = ew("build", "--project", str(UPROJECT), "--lock-wait", "0")
     check("editor open -> build refused LOCKED, editor named", code == 2 and r.get("error") == "LOCKED"
           and any("unrealeditor" in h["name"].lower() and h.get("files") for h in r.get("holders", [])), r)
-    print("NOTE editor is open: build/status/test-with-build checks skipped (close the editor to run them)")
+    print("NOTE editor is open: real build checks skipped (close the editor to run them)")
 else:
     dll = next((f for f in (PROJ / "Binaries").rglob("*.dll")), None)
     if dll:
@@ -192,24 +172,15 @@ else:
     code, r = ew("status", "--project", str(UPROJECT), "--id", str(bid), "--wait", "1500")
     check("status follows the detached build to the end -> succeeded", code == 0 and r.get("status") == "succeeded"
           and r.get("result", "").startswith("Succeeded"), r)
-    code, r = ew("test", "--project", str(UPROJECT), "--exe", sys.executable, "--exe-arg", str(FAKE), "--url", "/X?Mode=pass",
-                 "--pass", "PASSED", "--fail", "FAILED", "--filter", "SELFTEST")
-    check("test: build (up to date) -> run -> PASSED", code == 0 and r.get("build", {}).get("status") == "succeeded"
-          and r.get("verdicts") == {"default": "PASSED"}, r)
+    code, r = ew("build", "--project", str(UPROJECT), "--wait", "1500")
+    check("build again -> up to date, succeeded", code == 0 and r.get("status") == "succeeded" and r.get("upToDate"), r)
 code, r = ew("status", "--project", str(UPROJECT), "--id", "nope")
 check("status of an unknown build -> NO_BUILD", code == 2 and r.get("error") == "NO_BUILD", r)
+code, r = ew("build", "--project", str(PROJ / "nope.uproject"))
+check("missing project -> NO_PROJECT", code == 2 and r.get("error") == "NO_PROJECT", r)
+code, r = ew("run", "--project", str(UPROJECT))
+check("run/test/compose are MCP tools now (game_run, image_compose): ewtool refuses them", code == 2, r)
 
-# ---------------------------------------------------------------- the real game (optional)
-if os.environ.get("ENGINEWRIGHT_TEST_GAME") == "1":
-    code, r = ew("run", "--project", str(UPROJECT), "--url", "/Engine/Maps/Templates/Template_Default?EWProbe=1",
-                 "--res", "1280x720", "--arg", "-ExecCmds=HighResShot 1", "--done", "Screenshot", "--done-grace", "5",
-                 "--filter", "Screenshot", "--timeout", "900")
-    run0 = (r.get("runs") or [{}])[0]
-    check("real game: URL confirmed in its log", run0.get("urlConfirmed") is True, r)
-    pngs = run0.get("screenshots", [])
-    check("real game: HighResShot PNG collected at 1280x720", any(s.get("width") == 1280 and s.get("height") == 720 for s in pngs), r)
-else:
-    print("SKIP real game run (set ENGINEWRIGHT_TEST_GAME=1)")
-
-shutil.rmtree(TMP, ignore_errors=True)
+time.sleep(1)
+shutil.rmtree(FAKE_DIR, ignore_errors=True)
 done()

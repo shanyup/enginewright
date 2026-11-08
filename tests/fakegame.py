@@ -1,14 +1,14 @@
-"""A stand-in for a game, used by test_ewtool.py (no Unreal needed).
+"""A stand-in for a game, used by test_game.py (game_run) instead of a real game.
 
-Called as: python ewtool_fakegame.py <url> [-ResX=W -ResY=H ...] -abslog=<file> ...
+Called as: python fakegame.py <url> [-ResX=W -ResY=H ...] -abslog=<file> ...
 The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|nolog|quiet, Shots=<dir> (writes one PNG
 of the requested size there), Mangle=1 (logs a command line with the URL cut at the first '=', like a broken
 batch file), Code=<n> (exit code).
 """
 import os, sys, time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Plugins", "Enginewright", "Scripts"))
-import ew_png  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ewpng  # noqa: E402
 
 args = sys.argv[1:]
 url = next((a for a in args if not a.startswith("-")), "")
@@ -42,7 +42,7 @@ say("[Save] slot=Test01 written")
 if opt.get("Shots"):
     w, h = int(val("ResX") or 64), int(val("ResY") or 32)
     os.makedirs(opt["Shots"], exist_ok=True)
-    ew_png.write_png(os.path.join(opt["Shots"], f"shot_{w}x{h}.png"), w, h, bytearray(b"\x10\x80\xf0\xff" * (w * h)))
+    ewpng.write_png(os.path.join(opt["Shots"], f"shot_{w}x{h}.png"), w, h, bytearray(b"\x10\x80\xf0\xff" * (w * h)))
     say(f"SELFTEST shot {w}x{h} saved")
 if mode == "fail":
     say("SELFTEST Logic FAILED: expected 3 got 2")

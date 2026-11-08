@@ -1,39 +1,28 @@
-"""ewtool.py: build, run and check an Unreal project from outside the editor (Python 3 standard library only).
+"""ewtool.py: compile an Unreal project while its editor is closed (Python 3 standard library only).
 
-Part of Enginewright. The MCP server lives inside the editor; these jobs need the editor closed or run
-the game itself, so they are a command line tool. Every command prints one JSON object (exit code 0 = ok).
+Part of Enginewright, and optional: the MCP server inside the editor needs no Python. This helper only does the
+one job the editor cannot do for itself: build the editor target while the editor is closed (its DLLs are locked
+while it runs). Running the game, self-tests and screenshots are MCP tools (game_run, image_compose).
+Every command prints one JSON object (exit code 0 = ok).
 
 Commands
   build    Compile a target with UnrealBuildTool. Waits for another build (UBT mutex) and for locked
-           binaries, names the process that holds a locked DLL, and runs UBT in a detached worker: when the
-           wait time is over UBT keeps running (never killed half way) and `status` follows it.
-  status   State of a build started by `build` (running / succeeded / failed, errors, log).
+           binaries, names the process that holds a locked DLL, and runs UBT in a detached worker that is
+           outside the caller's process tree and job object: when the wait time is over, or the caller is
+           killed (an agent's tool time limit), UBT keeps running and `status` follows it.
+  status   State of a build started by `build` (running / succeeded / failed / lost, errors, log).
   locks    Which processes hold the project's binaries (DLL/EXE) open.
-  run      Start the game (`UnrealEditor.exe <project> <url> -game`, or a packaged exe) once per resolution,
-           pass the URL unchanged (checked against the game's own log), wait for exit or time-out, keep the
-           log lines you ask for, decide PASSED/FAILED from your patterns, and collect the new PNG files.
-  test     `run` with a build first and a required verdict: compile -> run self-test -> PASSED/FAILED lines.
-  compose  Put 2-4 (or more) PNG images side by side in one labelled PNG (rows x columns).
-
-Placeholders in --url and --arg: {shots} (per-run output folder, forward slashes), {out}, {w}, {h}, {res}.
 
 Examples
   python ewtool.py build  --project D:/P/MyGame.uproject
-  python ewtool.py run    --project D:/P/MyGame.uproject --url "/Game/Maps/Menu?Shots={shots}?Quit=1" \
-                          --res 1920x1080 --res 1280x720 --filter "TEST " --pass "ALL PASSED" --fail "FAILED"
-  python ewtool.py test   --project D:/P/MyGame.uproject --url "/Game/Maps/Test?SelfTest=Logic" \
-                          --filter "TEST " --filter "[Save]" --pass "TEST .*PASSED" --fail "TEST .*FAILED"
-  python ewtool.py compose --out cmp.png --cols "Web,Game" --row 1920 web1920.png game1920.png \
-                          --row 1280 web1280.png game1280.png --title "Main menu"
+  python ewtool.py build  --project D:/P/MyGame.uproject --background
+  python ewtool.py status --project D:/P/MyGame.uproject --wait 600
+  python ewtool.py locks  --project D:/P/MyGame.uproject
 """
-import argparse, datetime, json, os, pathlib, re, shutil, subprocess, sys, time
+import argparse, datetime, json, os, pathlib, re, subprocess, sys, time
 
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import ew_png  # noqa: E402
-
 IS_WIN = os.name == "nt"
-CRASH_RE = re.compile(r"Fatal error|Unhandled Exception|=== Critical error ===|Assertion failed|appError called")
 
 
 class Fail(Exception):
@@ -88,12 +77,11 @@ def find_engine(meta, given):
     cands = []
     if IS_WIN:
         import winreg
-        for root, key in ((winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\EpicGames\Unreal Engine\{assoc}"),):
-            try:
-                with winreg.OpenKey(root, key) as k:
-                    cands.append(winreg.QueryValueEx(k, "InstalledDirectory")[0])
-            except OSError:
-                pass
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\EpicGames\Unreal Engine\{assoc}") as k:
+                cands.append(winreg.QueryValueEx(k, "InstalledDirectory")[0])
+        except OSError:
+            pass
         try:  # source builds registered by GUID
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Epic Games\Unreal Engine\Builds") as k:
                 cands.append(winreg.QueryValueEx(k, assoc)[0])
@@ -146,6 +134,7 @@ def processes(names_re=r"UnrealEditor|UnrealBuildTool|dotnet|UnrealGame|ShaderCo
             return []
         rows = json.loads(out)
         rows = rows if isinstance(rows, list) else [rows]
+
         def when(v):
             m = re.search(r"Date\((\d+)", str(v or ""))
             return datetime.datetime.fromtimestamp(int(m.group(1)) / 1000).isoformat(timespec="seconds") if m else v
@@ -247,9 +236,22 @@ def read_state(path):
 
 
 def write_state(path, st):
-    tmp = str(path) + ".tmp"
+    tmp = str(path) + f".{os.getpid()}.tmp"
     pathlib.Path(tmp).write_text(json.dumps(st, indent=1), encoding="utf-8")
+    for _ in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # the other process is reading it right now
+            time.sleep(0.05)
     os.replace(tmp, path)
+
+
+def update_state(path, **kv):
+    st = read_state(path)
+    st.update(kv)
+    write_state(path, st)
+    return st
 
 
 def pid_alive(pid):
@@ -275,24 +277,61 @@ def worker_main(state_path):
     """Detached worker: runs the build command, records child pid and exit code in the state file."""
     st = read_state(state_path)
     with open(st["log"], "w", encoding="utf-8", errors="replace") as log:
-        p = subprocess.Popen(st["cmd"], stdout=log, stderr=subprocess.STDOUT)
-        st.update(childPid=p.pid, workerPid=os.getpid())
-        write_state(state_path, st)
+        p = subprocess.Popen(st["cmd"], stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             creationflags=0x08000000 if IS_WIN else 0)  # CREATE_NO_WINDOW
+        update_state(state_path, childPid=p.pid, workerPid=os.getpid())
         code = p.wait()
-    st = read_state(state_path)
-    st.update(exitCode=code, finished=time.time())
-    write_state(state_path, st)
+    update_state(state_path, exitCode=code, finished=time.time())
 
 
-def spawn_detached(args):
-    kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
-    if IS_WIN:
-        base = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        try:  # leave the caller's job object, so a killed caller does not take UBT with it
-            return subprocess.Popen(args, creationflags=base | 0x01000000, **kw), True
-        except OSError:
-            return subprocess.Popen(args, creationflags=base, **kw), False
-    return subprocess.Popen(args, start_new_session=True, **kw), True
+def in_job():
+    """True when this process runs inside a Windows job object (an agent's tool, a CI step, an IDE terminal)."""
+    if not IS_WIN:
+        return False
+    import ctypes
+    from ctypes import wintypes as wt
+    r = wt.BOOL()
+    k = ctypes.windll.kernel32
+    return bool(k.IsProcessInJob(k.GetCurrentProcess(), None, ctypes.byref(r)) and r.value)
+
+
+def spawn_wmi(args, cwd):
+    """Starts args through WMI (Win32_Process.Create). The new process is a child of the WMI service host:
+    outside the caller's process tree and job object, so killing the caller (taskkill /T, job close) does not
+    reach it. Returns the pid or raises OSError."""
+    env = dict(os.environ, EWTOOL_CMDLINE=subprocess.list2cmdline(args), EWTOOL_CWD=str(cwd))
+    ps = ("$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
+          "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+          "@{CommandLine=$env:EWTOOL_CMDLINE; CurrentDirectory=$env:EWTOOL_CWD; ProcessStartupInformation=$si}; "
+          "Write-Output \"$($r.ReturnValue) $($r.ProcessId)\"")
+    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
+                         env=env, timeout=60, creationflags=0x08000000).stdout.split()
+    if len(out) != 2 or out[0] != "0":
+        raise OSError(f"Win32_Process.Create failed: {' '.join(out) or 'no answer'}")
+    return int(out[1])
+
+
+def spawn_detached(args, cwd):
+    """Starts the build worker so that it outlives the caller. Returns how: wmi / breakaway / new-session / none."""
+    if os.environ.get("EWTOOL_SPAWN") != "plain":
+        if IS_WIN:
+            try:
+                spawn_wmi(args, cwd)
+                return "wmi"
+            except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            subprocess.Popen(args, cwd=cwd, start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+            return "new-session"
+    kw = {"cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
+    base = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    try:  # leave the caller's job object (refused when the job does not allow breakaway)
+        subprocess.Popen(args, creationflags=base | 0x01000000, **kw)
+        return "breakaway"
+    except OSError:
+        subprocess.Popen(args, creationflags=base, **kw)
+        return "none"
 
 
 ERR_RE = re.compile(r"\): (fatal )?error |error (C|LNK|MSB)\d+|: Error: |ERROR: ")
@@ -325,7 +364,7 @@ def build_report(proj, st_path):
     text = pathlib.Path(st["log"]).read_text(encoding="utf-8", errors="replace") if pathlib.Path(st["log"]).is_file() else ""
     info = parse_build_log(text)
     running = st.get("exitCode") is None and (pid_alive(st.get("childPid")) or pid_alive(st.get("workerPid")) or
-                                             (not st.get("childPid") and time.time() - st["started"] < 30))
+                                             (not st.get("childPid") and time.time() - st["started"] < 60))
     if running:
         status = "running"
     elif st.get("exitCode") is None:
@@ -341,17 +380,23 @@ def build_report(proj, st_path):
         if info["waitingForOtherBuild"]:
             rep["otherBuilds"] = [p for p in ubt_processes() if p["pid"] != st.get("childPid")]
         rep["hint"] = f"still running; follow with: ewtool.py status --project \"{fwd(proj)}\" --id {st['id']} --wait 600"
+    if status == "lost":
+        rep["hint"] = "the build worker ended without an exit code (killed?); build again (the build resumes from what was compiled)"
     return rep
 
 
-def cmd_build(a, proj=None, meta=None):
-    if proj is None:
-        proj, meta = load_project(a.project)
-    engine = find_engine(meta, a.engine)
+def cmd_build(a):
+    proj, meta = load_project(a.project)
     target = a.target or default_target(proj)
-    ubt = engine / "Engine" / "Binaries" / "DotNET" / "UnrealBuildTool" / ("UnrealBuildTool.exe" if IS_WIN else "UnrealBuildTool")
-    if not ubt.is_file():
-        raise Fail("NO_UBT", f"UnrealBuildTool not found: {ubt}")
+    test_cmd = os.environ.get("EWTOOL_TEST_UBT")  # tests only: a JSON command list that stands in for UnrealBuildTool
+    if test_cmd:
+        cmd = json.loads(test_cmd)
+    else:
+        engine = find_engine(meta, a.engine)
+        ubt = engine / "Engine" / "Binaries" / "DotNET" / "UnrealBuildTool" / ("UnrealBuildTool.exe" if IS_WIN else "UnrealBuildTool")
+        if not ubt.is_file():
+            raise Fail("NO_UBT", f"UnrealBuildTool not found: {ubt}")
+        cmd = [str(ubt), target, a.platform, a.config, f"-Project={proj}", "-WaitMutex", "-NoHotReloadFromIDE"] + list(a.ubt_arg or [])
     # Binaries in use by a running editor/game cannot be replaced: wait, then name who holds them.
     files = project_binaries(proj)
     deadline = time.time() + a.lock_wait
@@ -366,14 +411,14 @@ def cmd_build(a, proj=None, meta=None):
                    hint="a process that cannot be closed (zombie) keeps the DLL locked until it ends or the PC restarts")
     bid = now_tag() + f"-{os.getpid()}"
     log = runs_dir(proj) / f"build-{bid}.log"
-    cmd = [str(ubt), target, a.platform, a.config, f"-Project={proj}", "-WaitMutex", "-NoHotReloadFromIDE"] + list(a.ubt_arg or [])
     st_path = build_state_path(proj, bid)
     write_state(st_path, {"id": bid, "target": target, "cmd": cmd, "log": str(log), "started": time.time(),
                           "exitCode": None, "project": str(proj)})
-    _, detached = spawn_detached([sys.executable, str(HERE / "ewtool.py"), "_worker", str(st_path)])
-    st = read_state(st_path)
-    st["detached"] = detached
-    write_state(st_path, st)
+    py = pathlib.Path(sys.executable)
+    pyw = py.with_name("pythonw.exe")  # no console window for the worker
+    worker = [str(pyw if IS_WIN and pyw.is_file() else py), str(HERE / "ewtool.py"), "_worker", str(st_path)]
+    how = spawn_detached(worker, proj.parent)
+    update_state(st_path, detached=how)
     if a.background:
         return build_report(proj, st_path)
     deadline = time.time() + a.wait
@@ -411,231 +456,6 @@ def cmd_locks(a):
             "builds": [p for p in procs if "unrealbuildtool" in (p["name"] + p["commandLine"]).lower()]}
 
 
-# ---------------------------------------------------------------- run / test
-
-def parse_res(s):
-    m = re.fullmatch(r"\s*(\d{2,5})\s*[xX*]\s*(\d{2,5})\s*", s)
-    if not m:
-        raise Fail("BAD_ARGS", f"resolution must look like 1920x1080, got '{s}'")
-    return int(m.group(1)), int(m.group(2))
-
-
-def fill_placeholders(s, values):
-    def rep(m):
-        k = m.group(1)
-        if k not in values:
-            raise Fail("BAD_ARGS", f"unknown placeholder {{{k}}} in '{s}' (known: {', '.join(sorted(values))})")
-        return values[k]
-    return re.sub(r"\{(\w+)\}", rep, s)
-
-
-def read_log_text(path):
-    try:
-        data = pathlib.Path(path).read_bytes()
-    except OSError:
-        return ""
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff") or (len(data) > 3 and data[1:2] == b"\0" and data[3:4] == b"\0"):
-        return data.decode("utf-16", errors="replace")
-    return data.decode("utf-8-sig", errors="replace")
-
-
-def kill_tree(pid):
-    if IS_WIN:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
-    else:
-        try:
-            os.killpg(os.getpgid(pid), 9)  # type: ignore[attr-defined]  # POSIX only
-        except OSError:
-            pass
-
-
-def collect_pngs(dirs, since, dest, res):
-    found, seen = [], set()
-    for d in dirs:
-        d = pathlib.Path(d)
-        if not d.is_dir():
-            continue
-        for f in sorted(d.rglob("*.png")):
-            try:
-                if f.stat().st_mtime < since - 1 or f.resolve() in seen:
-                    continue
-            except OSError:
-                continue
-            seen.add(f.resolve())
-            src = f
-            if dest not in f.resolve().parents:  # copy shots written outside the run folder into it
-                dest.mkdir(parents=True, exist_ok=True)
-                target = dest / f.name
-                n = 1
-                while target.exists():
-                    target = dest / f"{f.stem}_{n}{f.suffix}"
-                    n += 1
-                shutil.copy2(f, target)
-                f = target
-            item = {"path": fwd(f), "bytes": f.stat().st_size}
-            if src != f:
-                item["copiedFrom"] = fwd(src)
-            try:
-                w, h = ew_png.png_size(str(f))
-                item.update(width=w, height=h, matchesRes=(res is None or (w, h) == res))
-            except ew_png.PngError as e:
-                item["error"] = str(e)
-            found.append(item)
-    return found
-
-
-def run_once(a, proj, engine, url_t, res, out_dir, extra_t):
-    w, h = res if res else (None, None)
-    tag = f"{w}x{h}" if res else "default"
-    rdir = out_dir / tag
-    shots = rdir / "shots"
-    if not a.dry_run:
-        shots.mkdir(parents=True, exist_ok=True)
-    vals = {"shots": fwd(shots), "out": fwd(rdir), "w": str(w or ""), "h": str(h or ""), "res": tag}
-    url = fill_placeholders(url_t, vals) if url_t else ""
-    extra = [fill_placeholders(x, vals) for x in extra_t]
-    log = rdir / "game.log"
-    if a.exe:
-        cmd = [a.exe] + list(a.exe_arg or []) + ([url] if url else [])
-    else:
-        cmd = [str(engine / "Engine" / "Binaries" / ("Win64" if IS_WIN else "Linux") / ("UnrealEditor.exe" if IS_WIN else "UnrealEditor")),
-               str(proj)] + ([url] if url else []) + ["-game"]
-    if res:
-        cmd += [f"-ResX={w}", f"-ResY={h}", "-fullscreen" if a.fullscreen else "-windowed"]
-    cmd += [f"-abslog={log}", "-log", "-nosplash"] + ([] if a.no_unattended else ["-unattended"]) + extra
-    rep = {"res": tag, "command": cmd, "log": fwd(log), "url": url}
-    if a.dry_run:
-        return rep
-    pass_re = [re.compile(x) for x in a.pass_] if a.pass_ else []
-    fail_re = [re.compile(x) for x in a.fail] if a.fail else []
-    done_re = re.compile(a.done) if a.done else None
-    req_re = re.compile(a.require) if a.require else None
-    t0 = time.time()
-    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    url_ok = None if url else True
-    stop_reason, done_at, text = None, None, ""
-    while True:
-        exited = p.poll() is not None
-        text = read_log_text(log)
-        if url_ok is None:
-            cl = next((l for l in text.splitlines() if "Command Line:" in l), None)
-            if cl is not None:
-                url_ok = url in cl
-                rep["commandLineSeen"] = cl.split("Command Line:", 1)[1].strip()[:1000]
-                if not url_ok:
-                    stop_reason = "URL_MISMATCH"
-            elif time.time() - t0 > a.url_check_timeout:
-                stop_reason = "URL_NOT_CONFIRMED"
-        if not stop_reason and req_re and time.time() - t0 > a.require_within and not req_re.search(text):
-            stop_reason = "REQUIRED_LINE_MISSING"
-        if not stop_reason and done_re and done_at is None and done_re.search(text):
-            done_at = time.time()
-        if not stop_reason and done_at is not None and time.time() - done_at > a.done_grace and not exited:
-            stop_reason = "DONE_BUT_NOT_EXITED"
-        if exited or stop_reason or time.time() - t0 > a.timeout:
-            break
-        time.sleep(0.5)
-    timed_out = not exited and not stop_reason
-    if url_ok is None and not stop_reason:
-        stop_reason = "URL_NOT_CONFIRMED"  # the game ended (or was stopped) before logging its command line
-    if not exited:
-        kill_tree(p.pid)
-        try:
-            p.wait(30)
-        except subprocess.TimeoutExpired:
-            pass
-        time.sleep(1)
-        text = read_log_text(log)
-    lines = text.splitlines()
-    filters = a.filter or []
-    keep = [l for l in lines if any(f in l for f in filters) or any(r.search(l) for r in pass_re + fail_re) or CRASH_RE.search(l)]
-    fails = [l for l in lines if any(r.search(l) for r in fail_re)]
-    passes = [l for l in lines if any(r.search(l) for r in pass_re)]
-    crash = [l for l in lines if CRASH_RE.search(l)]
-    if stop_reason in ("URL_MISMATCH", "URL_NOT_CONFIRMED", "REQUIRED_LINE_MISSING"):
-        verdict = stop_reason
-    elif fails:
-        verdict = "FAILED"
-    elif crash:
-        verdict = "CRASHED"
-    elif pass_re:
-        verdict = "PASSED" if passes else ("TIMEOUT" if timed_out else "NO_VERDICT")
-    else:
-        verdict = "TIMEOUT" if timed_out else ("EXITED_OK" if p.returncode == 0 else "EXIT_CODE")
-    dirs = [shots] + [pathlib.Path(fill_placeholders(d, vals)) for d in (a.shots or [])]
-    if not a.exe:
-        dirs.append(proj.parent / "Saved" / "Screenshots")
-    rep.update({
-        "verdict": verdict, "exitCode": p.returncode if exited else None, "exited": exited, "timedOut": timed_out,
-        "stopReason": stop_reason, "seconds": round(time.time() - t0, 1), "urlConfirmed": url_ok,
-        "lines": [l[:500] for l in keep[:a.max_lines]], "lineCount": len(keep), "failLines": [l[:500] for l in fails[:50]],
-        "crashLines": [l[:500] for l in crash[:20]], "screenshots": collect_pngs(dirs, t0, shots, res)})
-    if not lines:
-        rep["warning"] = "the game wrote no log; check the command (wrong exe/project?)"
-    return rep
-
-
-def cmd_run(a, require_verdict=False):
-    proj, meta = load_project(a.project)
-    if require_verdict and not (a.pass_ or a.fail):
-        raise Fail("BAD_ARGS", "test needs --pass and/or --fail patterns to decide the result")
-    engine = None if (a.exe and not a.build) else find_engine(meta, a.engine)
-    if a.exe and not pathlib.Path(a.exe).is_file():
-        raise Fail("BAD_ARGS", f"--exe not found: {a.exe}")
-    res_list = [parse_res(r) for r in a.res] if a.res else [None]
-    out = pathlib.Path(a.out) if a.out else runs_dir(proj) / f"run-{now_tag()}"
-    if not a.dry_run:
-        out.mkdir(parents=True, exist_ok=True)
-    result = {"ok": False, "project": fwd(proj), "out": fwd(out), "build": None, "runs": []}
-    if a.build and not a.dry_run:
-        b = cmd_build(a, proj, meta)
-        result["build"] = b
-        if b["status"] != "succeeded":
-            result["error"] = "BUILD_" + b["status"].upper()
-            result["message"] = "build did not succeed; the game was not started" + \
-                (" (still running: follow it with status, then run again)" if b["status"] == "running" else "")
-            return result
-    for res in res_list:
-        result["runs"].append(run_once(a, proj, engine, a.url, res, out, a.arg or []))
-    if a.dry_run:
-        result["ok"] = True
-        return result
-    else:
-        good = {"PASSED", "EXITED_OK"}
-        result["ok"] = all(r["verdict"] in good for r in result["runs"])
-        result["verdicts"] = {r["res"]: r["verdict"] for r in result["runs"]}
-    (out / "summary.json").write_text(json.dumps(result, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
-    result["summary"] = fwd(out / "summary.json")
-    return result
-
-
-# ---------------------------------------------------------------- compose
-
-def cmd_compose(a):
-    rows = []
-    if a.row:
-        for r in a.row:
-            if len(r) < 2:
-                raise Fail("BAD_ARGS", "--row needs a label and at least one image: --row LABEL a.png [b.png ...]")
-            rows.append((r[0], r[1:]))
-    if a.images:
-        rows.append((None, a.images))
-    if not rows:
-        raise Fail("BAD_ARGS", "give images (compose a.png b.png) or rows (--row LABEL a.png b.png)")
-    cols = [c.strip() for c in a.cols.split(",")] if a.cols else None
-    for _, paths in rows:
-        for p in paths:
-            if not os.path.isfile(p):
-                raise Fail("NOT_FOUND", f"image not found: {p}")
-    out = a.out
-    pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        info = ew_png.compose(rows, out, cols, a.title, a.cell_width)
-    except ew_png.PngError as e:
-        raise Fail("BAD_IMAGE", str(e))
-    return {"ok": True, **info}
-
-
 # ---------------------------------------------------------------- CLI
 
 def main(argv=None):
@@ -645,22 +465,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ewtool.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    def common(p):
-        p.add_argument("--project", required=True, help="the .uproject file (or its folder)")
-        p.add_argument("--engine", help="engine root (default: from EngineAssociation, or UE_ENGINE_DIR)")
-
-    def build_args(p):
-        p.add_argument("--target", help="build target (default <Project>Editor)")
-        p.add_argument("--platform", default="Win64" if IS_WIN else "Linux")
-        p.add_argument("--config", default="Development")
-        p.add_argument("--wait", type=int, default=3600, help="seconds to wait for the build; UBT keeps running after it")
-        p.add_argument("--lock-wait", type=int, default=120, help="seconds to wait for locked binaries to be released")
-        p.add_argument("--ubt-arg", action="append", help="extra UnrealBuildTool argument (repeatable), e.g. --ubt-arg=-ForceUnity")
-        p.add_argument("--background", action="store_true", help="start and return at once (follow with status)")
-
     p = sub.add_parser("build", help="compile a target")
-    common(p)
-    build_args(p)
+    p.add_argument("--project", required=True, help="the .uproject file (or its folder)")
+    p.add_argument("--engine", help="engine root (default: from EngineAssociation, or UE_ENGINE_DIR)")
+    p.add_argument("--target", help="build target (default <Project>Editor)")
+    p.add_argument("--platform", default="Win64" if IS_WIN else "Linux")
+    p.add_argument("--config", default="Development")
+    p.add_argument("--wait", type=int, default=3600, help="seconds to wait for the build; UBT keeps running after it")
+    p.add_argument("--lock-wait", type=int, default=120, help="seconds to wait for locked binaries to be released")
+    p.add_argument("--ubt-arg", action="append", help="extra UnrealBuildTool argument (repeatable), e.g. --ubt-arg=-ForceUnity")
+    p.add_argument("--background", action="store_true", help="start and return at once (follow with status)")
     p = sub.add_parser("status", help="state of a build")
     p.add_argument("--project", required=True)
     p.add_argument("--id", default="latest")
@@ -668,45 +482,6 @@ def main(argv=None):
     p = sub.add_parser("locks", help="who holds the project's binaries")
     p.add_argument("--project", required=True)
     p.add_argument("--file", action="append", help="check this file instead of the project binaries (repeatable)")
-
-    for name in ("run", "test"):
-        p = sub.add_parser(name, help="run the game" if name == "run" else "build, run a self-test, report PASSED/FAILED")
-        common(p)
-        build_args(p)
-        p.add_argument("--url", default="", help="map + options passed unchanged, e.g. /Game/Maps/Test?Mode=Logic")
-        p.add_argument("--res", action="append", help="resolution WxH (repeatable: one run each)")
-        p.add_argument("--fullscreen", action="store_true", help="fullscreen instead of windowed")
-        p.add_argument("--exe", help="packaged game exe instead of UnrealEditor.exe -game")
-        p.add_argument("--exe-arg", action="append", help="argument placed right after --exe, before the URL (repeatable)")
-        p.add_argument("--arg", action="append", help="extra game argument (repeatable), e.g. --arg=-nosound")
-        p.add_argument("--timeout", type=int, default=600, help="seconds per run before the game is stopped")
-        p.add_argument("--filter", action="append", help="keep log lines containing this text (repeatable)")
-        p.add_argument("--pass", dest="pass_", action="append", help="regex: a matching line means PASSED")
-        p.add_argument("--fail", action="append", help="regex: a matching line means FAILED")
-        p.add_argument("--done", help="regex: the run is over when this line appears (stop the game after --done-grace s)")
-        p.add_argument("--done-grace", type=int, default=20)
-        p.add_argument("--require", help="regex that must appear within --require-within s, else stop (guards against "
-                                         "starting the real game when the test mode did not engage)")
-        p.add_argument("--require-within", type=int, default=120)
-        p.add_argument("--url-check-timeout", type=int, default=120, help="seconds to wait for the game log's command line")
-        p.add_argument("--shots", action="append", help="extra folder to collect new PNGs from (repeatable, placeholders ok)")
-        p.add_argument("--out", help="output folder (default <project>/Saved/Enginewright/runs/run-<time>)")
-        p.add_argument("--max-lines", type=int, default=300)
-        p.add_argument("--no-unattended", action="store_true", help="do not pass -unattended")
-        p.add_argument("--dry-run", action="store_true", help="print the commands only")
-        if name == "run":
-            p.add_argument("--build", action="store_true", help="build first (waits for locks and other builds)")
-        else:
-            p.add_argument("--no-build", dest="build", action="store_false", help="skip the build")
-            p.set_defaults(build=True)
-
-    p = sub.add_parser("compose", help="labelled side-by-side PNG")
-    p.add_argument("images", nargs="*", help="images for a single row")
-    p.add_argument("--row", nargs="+", action="append", metavar="LABEL_THEN_IMAGES", help="--row LABEL a.png b.png (repeatable)")
-    p.add_argument("--cols", help="column labels, comma separated (e.g. 'Web,Game')")
-    p.add_argument("--title")
-    p.add_argument("--cell-width", type=int, default=960, help="scale images down to this width (0 = original size)")
-    p.add_argument("--out", required=True)
 
     a = ap.parse_args(argv)
     try:
@@ -718,10 +493,6 @@ def main(argv=None):
             emit(rep, 0 if rep["ok"] else (3 if rep["status"] == "running" else 1))
         elif a.cmd == "locks":
             emit(cmd_locks(a), 0)
-        elif a.cmd in ("run", "test"):
-            emit(cmd_run(a, require_verdict=(a.cmd == "test")))
-        elif a.cmd == "compose":
-            emit(cmd_compose(a))
     except Fail as e:
         emit({"ok": False, "error": e.code, "message": e.message, **e.extra}, 2)
 

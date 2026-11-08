@@ -37,6 +37,9 @@ void RegisterUMGTools(FEWRegistry& R);
 void RegisterGameplayTagTools(FEWRegistry& R);
 void RegisterUIRuntimeTools(FEWRegistry& R);
 void RegisterLocalizationTools(FEWRegistry& R);
+void RegisterGameRunTools(FEWRegistry& R);
+void RegisterImageTools(FEWRegistry& R);
+void EWStopGameRuns();
 namespace EW
 {
 	void InstallLogCapture();
@@ -134,6 +137,8 @@ void FEnginewrightModule::StartupModule()
 	RegisterGameplayTagTools(Reg);
 	RegisterUIRuntimeTools(Reg);
 	RegisterLocalizationTools(Reg);
+	RegisterGameRunTools(Reg);
+	RegisterImageTools(Reg);
 
 	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
 	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }
@@ -172,6 +177,7 @@ void FEnginewrightModule::StartupModule()
 
 void FEnginewrightModule::ShutdownModule()
 {
+	EWStopGameRuns();
 	if (Router.IsValid())
 	{
 		for (const FHttpRouteHandle& H : Routes) { Router->UnbindRoute(H); }
