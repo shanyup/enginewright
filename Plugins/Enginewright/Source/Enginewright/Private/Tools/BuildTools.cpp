@@ -148,7 +148,9 @@ void RegisterBuildTools(FEWRegistry& R)
 			Data->SetBoolField(TEXT("reopen"), bReopen);
 			Data->SetStringField(TEXT("log"), BuildLog());
 			if (bBuild && !bHasCode) { Data->SetStringField(TEXT("note"), TEXT("The project has no Source folder; nothing to build.")); }
-			return FEWResult::Ok(Data, TEXT("The editor closes now. Poll editor_state until it answers again, then call build_status."));
+			return FEWResult::Ok(Data, bReopen
+				? TEXT("The editor closes now. Poll editor_state until it answers again, then call build_status.")
+				: TEXT("The editor closes now and is not reopened (reopen false)."));
 		});
 
 	R.Register(TEXT("build_status"),

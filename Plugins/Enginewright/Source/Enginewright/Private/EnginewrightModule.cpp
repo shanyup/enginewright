@@ -172,7 +172,7 @@ void FEnginewrightModule::StartupModule()
 		})));
 	FHttpServerModule::Get().StartAllListeners();
 	UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server on %s (%d tools). Client configs: %s"),
-		*GetUrl(), Reg.All().Num(), *(Dir / TEXT("clients")));
+		*GetUrl(), Reg.All().Num(), *FPaths::ConvertRelativePathToFull(Dir / TEXT("clients")));
 }
 
 void FEnginewrightModule::ShutdownModule()

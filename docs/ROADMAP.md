@@ -28,8 +28,12 @@ Tested on UE 5.8 Win64 only.
 - Done: runtime UI with CommonUI support: `ui_state` (activatable widgets and stacks, buttons), `ui_click`, `ui_open`, `ui_close`; CommonUI assets (activatable pages, CommonButtonBase, text / button styles) are built with the Blueprint and widget tools.
 - Done: CommonUI input: `ui_input_audit` (input action wiring checks), `ui_open` with `stack` (push onto a running activatable stack, `ui_close` pops it), `ui_input_type` (switch input type); `object_set` on class defaults also updates placed instances and widget templates that still had the old default.
 - Done: localization: `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets, read back), `stringtable_compare` (missing, extra, empty, untranslated, format argument / rich text tag differences), `loc_culture` (switch the editor language).
-- Done: `Scripts/ewtool.py` for jobs outside the editor (see [EWTOOL.md](EWTOOL.md)): `build` (waits for locks and other builds, names the process holding a DLL, never kills UBT half way), `run` / `test` (game with a URL checked against its log, per resolution, verdict from log patterns, PNG collection), `compose` (labelled side-by-side PNG).
-- Next: MVVM.
+- Done: running the game from the editor: `game_run` / `game_run_status` (the game in `-game` mode or a packaged exe, with a map URL checked against its log, one run per resolution, verdict from log patterns, filtered log lines, PNG collection), `image_compose` (labelled side-by-side PNG). No Python needed.
+- Done: optional `Scripts/ewtool.py` for the one job outside the editor (see [EWTOOL.md](EWTOOL.md)): compiling while the editor is closed (waits for locks and other builds, names the process holding a DLL, UBT runs detached and outlives a killed caller).
+
+## v0.4 (next)
+
+- MVVM.
 
 ## Later (not started)
 

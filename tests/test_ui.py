@@ -103,6 +103,17 @@ r = c("ui_click", {"button": "*"})
 check("ui_click matching several -> AMBIGUOUS", not r["ok"] and r["errorCode"] == "AMBIGUOUS", r)
 shot = c("screenshot", {"inline": False, "maxWidth": 640})
 check("screenshot of the open screen", shot["ok"] and os.path.isfile(shot["data"]["file"]), shot)
+check("screenshot includes the UI by default (data.ui)", shot["ok"] and shot["data"].get("ui") is True, shot)
+scene = c("screenshot", {"inline": False, "maxWidth": 640, "ui": False})
+check("screenshot ui false -> scene only", scene["ok"] and scene["data"].get("ui") is False, scene)
+if shot["ok"] and scene["ok"]:
+    # The buttons are drawn only in the UI capture: the two images must differ around the OK button.
+    import ewpng
+    w1, h1, a = ewpng.read_png(shot["data"]["file"])
+    w2, h2, b = ewpng.read_png(scene["data"]["file"])
+    diff = sum(1 for i in range(0, min(len(a), len(b)), 4) if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > 60)
+    check("the UI capture shows the menu (differs from the scene-only capture)", (w1, h1) == (w2, h2) and diff > 0.005 * w1 * h1,
+          {"size": [w1, h1, w2, h2], "changedPixels": diff})
 r = c("ui_close", {"widget": "WBP_EWClick"})
 check("ui_close removes it", r["ok"] and not any(b["label"] == "OK" for b in c("ui_state")["data"]["buttons"]), r)
 r = c("ui_close", {"widget": "WBP_EWClick"})
