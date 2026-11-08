@@ -7,6 +7,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
 #include "EnhancedInputSubsystems.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -22,6 +23,7 @@
 #include "PlayInEditorDataTypes.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "UnrealClient.h"
+#include "Widgets/SViewport.h"
 
 namespace
 {
@@ -101,18 +103,33 @@ namespace
 
 	/** Reads a viewport into an image result; downsizes to MaxWidth. */
 	/** Draws and reads a viewport, downsized to MaxWidth. */
-	bool Grab(FViewport* V, int32 MaxWidth, TArray<FColor>& Pixels, int32& W, int32& H, FEWResult& OutErr)
+	/** With UIWidget (the game viewport widget) the capture goes through Slate and includes the UI drawn over the
+	 *  scene (UMG, CommonUI); bOutUI tells whether that worked. Without it, or when it fails, only the scene is read. */
+	bool Grab(FViewport* V, int32 MaxWidth, TArray<FColor>& Pixels, int32& W, int32& H, FEWResult& OutErr,
+		TSharedPtr<SWidget> UIWidget = nullptr, bool* bOutUI = nullptr)
 	{
+		if (bOutUI) { *bOutUI = false; }
 		if (!V) { OutErr = FEWResult::Error(TEXT("NO_VIEWPORT"), TEXT("No viewport to capture.")); return false; }
 		const FIntPoint Size = V->GetSizeXY();
 		if (Size.X <= 0 || Size.Y <= 0) { OutErr = FEWResult::Error(TEXT("NO_VIEWPORT"), TEXT("The viewport has no size (window minimized or hidden?).")); return false; }
-		V->Draw();
-		if (!V->ReadPixels(Pixels, FReadSurfaceDataFlags(), FIntRect(0, 0, Size.X, Size.Y)) || Pixels.Num() != Size.X * Size.Y)
+		FIntVector UISize(0, 0, 0);
+		if (UIWidget.IsValid() && FSlateApplication::IsInitialized()
+			&& FSlateApplication::Get().TakeScreenshot(UIWidget.ToSharedRef(), Pixels, UISize)
+			&& UISize.X > 0 && UISize.Y > 0 && Pixels.Num() == UISize.X * UISize.Y)
 		{
-			OutErr = FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("Could not read the viewport pixels."));
-			return false;
+			W = UISize.X; H = UISize.Y;
+			if (bOutUI) { *bOutUI = true; }
 		}
-		W = Size.X; H = Size.Y;
+		else
+		{
+			V->Draw();
+			if (!V->ReadPixels(Pixels, FReadSurfaceDataFlags(), FIntRect(0, 0, Size.X, Size.Y)) || Pixels.Num() != Size.X * Size.Y)
+			{
+				OutErr = FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("Could not read the viewport pixels."));
+				return false;
+			}
+			W = Size.X; H = Size.Y;
+		}
 		if (MaxWidth > 0 && W > MaxWidth)
 		{
 			const int32 NW = MaxWidth, NH = FMath::Max(1, FMath::RoundToInt((double)H * NW / W));
@@ -132,14 +149,15 @@ namespace
 		return L / (255.0 * FMath::Max(1, Pixels.Num()));
 	}
 
-	FEWResult Capture(FViewport* V, const FString& Source, int32 MaxWidth, bool bInline, const FString& SaveTo)
+	FEWResult Capture(FViewport* V, const FString& Source, int32 MaxWidth, bool bInline, const FString& SaveTo, TSharedPtr<SWidget> UIWidget = nullptr)
 	{
 		if (!V) { return FEWResult::Error(TEXT("NO_VIEWPORT"), FString::Printf(TEXT("No %s viewport to capture."), *Source)); }
 		const FIntPoint Size = V->GetSizeXY();
 		TArray<FColor> Pixels;
 		int32 W = 0, H = 0;
 		FEWResult GrabErr;
-		if (!Grab(V, MaxWidth, Pixels, W, H, GrabErr)) { return GrabErr; }
+		bool bUI = false;
+		if (!Grab(V, MaxWidth, Pixels, W, H, GrabErr, UIWidget, &bUI)) { return GrabErr; }
 		const double Luma = MeanLuma(Pixels);
 		TArray64<uint8> Png;
 		if (!EW::EncodePng(Pixels, W, H, Png)) { return FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("PNG encoding failed.")); }
@@ -159,7 +177,9 @@ namespace
 		Data->SetNumberField(TEXT("viewportWidth"), Size.X);
 		Data->SetNumberField(TEXT("viewportHeight"), Size.Y);
 		Data->SetNumberField(TEXT("meanBrightness"), FMath::RoundToDouble(Luma * 1000) / 1000);
+		if (Source == TEXT("game")) { Data->SetBoolField(TEXT("ui"), bUI); }
 		FEWResult Res = FEWResult::Ok(Data);
+		if (UIWidget.IsValid() && !bUI) { Res.Warnings.Add(TEXT("The UI could not be captured through Slate; the image shows the scene only.")); }
 		if (Luma < 0.03) { Res.Warnings.Add(TEXT("The image is almost black: the scene may be unlit, or the window was not drawn.")); }
 		if (bInline) { Res.Images.Emplace(TEXT("image/png"), FBase64::Encode(Png.GetData(), Png.Num())); }
 		return Res;
@@ -331,10 +351,11 @@ void RegisterPieTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("screenshot"),
-		TEXT("Capture what a Play In Editor player sees (source game, the default while playing) or the level editor viewport (source editor). Saves a PNG under Saved/Enginewright/Screenshots and returns it as an image, with its mean brightness (warns when nearly black)."),
+		TEXT("Capture what a Play In Editor player sees, UI included (source game, the default while playing), or the level editor viewport (source editor). Saves a PNG under Saved/Enginewright/Screenshots and returns it as an image, with its mean brightness (warns when nearly black)."),
 		TEXT(R"({"type":"object","properties":{
 			"source":{"type":"string","enum":["game","editor"]},
 			"player":{"type":"integer","description":"Local player for source game; default 0."},
+			"ui":{"type":"boolean","description":"Source game: include the UI drawn over the scene (UMG, CommonUI, HUD widgets). Default true; false = the 3D scene only. data.ui tells what the image shows."},
 			"maxWidth":{"type":"integer","description":"Downsize to this width; default 1280, 0 = full size."},
 			"inline":{"type":"boolean","description":"Return the image in the reply (default true)."},
 			"file":{"type":"string","description":"PNG path to write; default a new file under Saved/Enginewright/Screenshots."}}})"),
@@ -347,6 +368,7 @@ void RegisterPieTools(FEWRegistry& R)
 			const bool bInline = EW::Bool(Args, TEXT("inline"), true);
 			const FString File = EW::Str(Args, TEXT("file"));
 			FViewport* V = nullptr;
+			TSharedPtr<SWidget> UIWidget;
 			TSharedPtr<FJsonObject> Camera;
 			if (Source == TEXT("game"))
 			{
@@ -355,6 +377,7 @@ void RegisterPieTools(FEWRegistry& R)
 				if (!PC) { return FEWResult::Error(TEXT("NO_PLAYER"), Err); }
 				ULocalPlayer* LP = PC->GetLocalPlayer();
 				V = LP && LP->ViewportClient ? LP->ViewportClient->Viewport : nullptr;
+				if (V && EW::Bool(Args, TEXT("ui"), true)) { UIWidget = LP->ViewportClient->GetGameViewportWidget(); }
 				if (PC->PlayerCameraManager)
 				{
 					Camera = MakeShared<FJsonObject>();
@@ -376,7 +399,7 @@ void RegisterPieTools(FEWRegistry& R)
 					Camera->SetNumberField(TEXT("fov"), GCurrentLevelEditingViewportClient->ViewFOV);
 				}
 			}
-			FEWResult Res = Capture(V, Source, MaxWidth, bInline, File);
+			FEWResult Res = Capture(V, Source, MaxWidth, bInline, File, UIWidget);
 			if (Res.bOk && Camera.IsValid()) { Res.Data->SetObjectField(TEXT("camera"), Camera); }
 			return Res;
 		});

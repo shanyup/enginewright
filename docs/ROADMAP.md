@@ -6,7 +6,7 @@ This is the current plan, not a promise. There are no dates. Order and scope can
 
 In-editor HTTP MCP server with token, three meta tools (`search`, `describe`, `call`), strict validation with read-back, object, asset, DataTable, level, editor, project settings and log tools, `doctor`, and atomic `batch` with rollback.
 
-## v0.2 (current)
+## v0.2 (done)
 
 - Prebuilt UE 5.8 Win64 zip (`tools/package.py`) and ready-to-paste client configs for Claude Code, Codex, Cursor, VS Code and Hermes (`client_config`).
 - Game camera screenshot and before/after screenshot (`screenshot`, `screenshot_ab`).
@@ -19,12 +19,21 @@ In-editor HTTP MCP server with token, three meta tools (`search`, `describe`, `c
 
 Tested on UE 5.8 Win64 only.
 
-## v0.3 (planned next)
+## v0.3 (current)
 
-- Safer rename: also report text and ID references to the old name (DataTable rows, string fields) that a redirector cannot fix.
-- Measuring helpers: size of a Blueprint or class (temporary spawn, bounds, automatic clean-up), trace grids.
-- Multiplayer tests on one machine: network emulation profiles and replication checks ("does client 2 see X").
-- UMG widgets and Gameplay Tags.
+- Done: safer rename (`asset_rename` reports text and ID references to the old name that a redirector cannot fix; `dryRun` preview).
+- Done: measuring helpers: `class_measure` (temporary spawn, bounds, automatic clean-up), `screen_coverage` (size on a player's screen).
+- Done: multiplayer tests on one machine: `pie_actors` (replication checks per world, waits for replication), `pie_net_emulation` (network emulation profiles).
+- Done: UMG widgets (create, tree, add / set / remove with slot layout, render to PNG) and Gameplay Tags (list, add, remove).
+- Done: runtime UI with CommonUI support: `ui_state` (activatable widgets and stacks, buttons), `ui_click`, `ui_open`, `ui_close`; CommonUI assets (activatable pages, CommonButtonBase, text / button styles) are built with the Blueprint and widget tools.
+- Done: CommonUI input: `ui_input_audit` (input action wiring checks), `ui_open` with `stack` (push onto a running activatable stack, `ui_close` pops it), `ui_input_type` (switch input type); `object_set` on class defaults also updates placed instances and widget templates that still had the old default.
+- Done: localization: `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets, read back), `stringtable_compare` (missing, extra, empty, untranslated, format argument / rich text tag differences), `loc_culture` (switch the editor language).
+- Done: running the game from the editor: `game_run` / `game_run_status` (the game in `-game` mode or a packaged exe, with a map URL checked against its log, one run per resolution, verdict from log patterns, filtered log lines, PNG collection), `image_compose` (labelled side-by-side PNG). No Python needed.
+- Done: optional `Scripts/ewtool.py` for the one job outside the editor (see [EWTOOL.md](EWTOOL.md)): compiling while the editor is closed (waits for locks and other builds, names the process holding a DLL, UBT runs detached and outlives a killed caller).
+
+## v0.4 (next)
+
+- MVVM.
 
 ## Later (not started)
 

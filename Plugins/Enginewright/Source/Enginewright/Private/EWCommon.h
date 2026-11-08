@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 
-#define ENGINEWRIGHT_VERSION TEXT("0.2.0-dev")
+#define ENGINEWRIGHT_VERSION TEXT("0.3.0")
 
 class UWorld;
 class APlayerController;
@@ -66,6 +66,9 @@ namespace EW
 
 	/** Package names of assets of Class (and subclasses) under Folder, recursively. */
 	TArray<FString> FindAssets(const FString& Folder, UClass* Class);
+
+	/** Visits every text-like value (name, string, text, reference path) in DataTables, Blueprint defaults and data assets under Folder. Returns assets scanned. */
+	int32 ScanContentText(const FString& Folder, int32 MaxAssets, TFunctionRef<void(const FString& Asset, const FString& Where, const FString& Field, const FString& Value)> Visit);
 
 	/** Sequence number of the newest captured log line. */
 	uint64 LogSeq();

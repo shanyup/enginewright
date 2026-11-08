@@ -31,6 +31,15 @@ void RegisterImportTools(FEWRegistry& R);
 void RegisterInputTools(FEWRegistry& R);
 void RegisterValidationTools(FEWRegistry& R);
 void RegisterAuditTools(FEWRegistry& R);
+void RegisterMultiplayerTools(FEWRegistry& R);
+void RegisterMeasureTools(FEWRegistry& R);
+void RegisterUMGTools(FEWRegistry& R);
+void RegisterGameplayTagTools(FEWRegistry& R);
+void RegisterUIRuntimeTools(FEWRegistry& R);
+void RegisterLocalizationTools(FEWRegistry& R);
+void RegisterGameRunTools(FEWRegistry& R);
+void RegisterImageTools(FEWRegistry& R);
+void EWStopGameRuns();
 namespace EW
 {
 	void InstallLogCapture();
@@ -122,6 +131,14 @@ void FEnginewrightModule::StartupModule()
 	RegisterInputTools(Reg);
 	RegisterValidationTools(Reg);
 	RegisterAuditTools(Reg);
+	RegisterMultiplayerTools(Reg);
+	RegisterMeasureTools(Reg);
+	RegisterUMGTools(Reg);
+	RegisterGameplayTagTools(Reg);
+	RegisterUIRuntimeTools(Reg);
+	RegisterLocalizationTools(Reg);
+	RegisterGameRunTools(Reg);
+	RegisterImageTools(Reg);
 
 	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
 	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }
@@ -155,11 +172,12 @@ void FEnginewrightModule::StartupModule()
 		})));
 	FHttpServerModule::Get().StartAllListeners();
 	UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server on %s (%d tools). Client configs: %s"),
-		*GetUrl(), Reg.All().Num(), *(Dir / TEXT("clients")));
+		*GetUrl(), Reg.All().Num(), *FPaths::ConvertRelativePathToFull(Dir / TEXT("clients")));
 }
 
 void FEnginewrightModule::ShutdownModule()
 {
+	EWStopGameRuns();
 	if (Router.IsValid())
 	{
 		for (const FHttpRouteHandle& H : Routes) { Router->UnbindRoute(H); }

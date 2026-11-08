@@ -5,6 +5,8 @@ public class Enginewright : ModuleRules
 	public Enginewright(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		// Each tool file keeps small helpers (Bad, Registry, ...) in an anonymous namespace; unity builds would merge them.
+		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -15,7 +17,8 @@ public class Enginewright : ModuleRules
 		{
 			"UnrealEd", "Projects", "Slate", "SlateCore", "AssetRegistry", "AssetTools", "DeveloperSettings",
 			"BlueprintGraph", "Kismet", "KismetCompiler", "GraphEditor", "ImageWrapper", "InputCore", "EnhancedInput",
-			"MaterialEditor", "LevelEditor", "EditorSubsystem", "DataValidation", "RenderCore", "RHI", "PhysicsCore"
+			"MaterialEditor", "LevelEditor", "EditorSubsystem", "DataValidation", "RenderCore", "RHI", "PhysicsCore",
+			"UMG", "UMGEditor", "GameplayTags", "GameplayTagsEditor"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
