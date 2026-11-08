@@ -101,6 +101,9 @@ def main():
             sys.exit(f"Zip contains files that should not ship: {bad[:5]}")
         if a.platform == "Win64" and "Enginewright/Binaries/Win64/UnrealEditor-Enginewright.dll" not in names:
             sys.exit("Zip is missing the editor DLL.")
+        missing = [f"Enginewright/Scripts/{s}" for s in ("ewtool.py", "ew_png.py", "ew_font.py") if f"Enginewright/Scripts/{s}" not in names]
+        if missing:
+            sys.exit(f"Zip is missing {missing} (Config/FilterPlugin.ini lists /Scripts/*.py).")
     if not a.keep_build:
         shutil.rmtree(build.parent)
     sha = hashlib.sha256(zpath.read_bytes()).hexdigest()
