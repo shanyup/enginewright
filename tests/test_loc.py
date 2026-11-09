@@ -1,7 +1,7 @@
 """Localization tests: String Table assets (create, set, remove, read back), registry listing, source vs translation
 comparison, and switching the editor language. Writes only under /Game/_EWTest.
 """
-import os, shutil, struct, sys, zlib
+import os, pathlib, shutil, struct, sys, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ewtest import PROJ, ROOT, call as c, check, delete_if_exists, done, ensure_stopped, rpc
 
@@ -306,6 +306,174 @@ check("font_coverage is described: read-only, every argument documented, mention
       and "tofu" in dd["data"]["description"] and "glyphMisses" in dd["data"]["description"], dd)
 shutil.rmtree(FONTS, ignore_errors=True)
 check("font test files removed", not FONTS.exists())
+
+# ---------------------------------------------------------------- ER-11: loc_gather (GatherText commandlet) + loc_gather_status
+GT = PROJ / "Saved" / "Enginewright" / "loc_gather_test"   # this test's own folder, removed at the end
+shutil.rmtree(GT, ignore_errors=True)
+(GT / "Config").mkdir(parents=True)
+(GT / "Source").mkdir()
+(GT / "Source" / "Probe.h").write_text('#define LOCTEXT_NAMESPACE "EWLocTest"\nFText A = LOCTEXT("Probe.Hello", "Hello from the probe");\n'
+                                       'FText B = LOCTEXT("Probe.Gold", "You have {0} gold");\n#undef LOCTEXT_NAMESPACE\n', encoding="utf-8")
+GTF = "Saved/Enginewright/loc_gather_test"          # the commandlet resolves these against the project folder
+DEST = str(GT).replace("\\", "/") + "/Content/Localization/EWLocTest"   # absolute, for reading the results
+COMMON = f"""[CommonSettings]
+SourcePath={GTF}/Content/Localization/EWLocTest
+DestinationPath={GTF}/Content/Localization/EWLocTest
+ManifestName=EWLocTest.manifest
+ArchiveName=EWLocTest.archive
+PortableObjectName=EWLocTest.po
+ResourceName=EWLocTest.locres
+NativeCulture=en
+CulturesToGenerate=en
+CulturesToGenerate=tr
+bUseCultureDirectory=true
+
+"""
+(GT / "Config" / "EWLocTest_Gather.ini").write_text(COMMON + f"""[GatherTextStep0]
+CommandletClass=GatherTextFromSource
+SearchDirectoryPaths=%LOCPROJECTROOT%{GTF}/Source
+FileNameFilters=*.h
+ShouldGatherFromEditorOnlyData=false
+
+[GatherTextStep1]
+CommandletClass=GenerateGatherManifest
+
+[GatherTextStep2]
+CommandletClass=GenerateGatherArchive
+""", encoding="utf-8")
+(GT / "Config" / "EWLocTest_Export.ini").write_text(COMMON + """[GatherTextStep0]
+CommandletClass=InternationalizationExport
+bExportLoc=true
+POFormat=Unreal
+ShouldPersistCommentsOnExport=false
+ShouldAddSourceLocationsAsComments=true
+""", encoding="utf-8")
+(GT / "Config" / "EWLocTest_Import.ini").write_text(COMMON + """[GatherTextStep0]
+CommandletClass=InternationalizationExport
+bImportLoc=true
+POFormat=Unreal
+""", encoding="utf-8")
+(GT / "Config" / "EWLocTest_Compile.ini").write_text(COMMON + """[GatherTextStep0]
+CommandletClass=GenerateTextLocalizationResource
+""", encoding="utf-8")
+(GT / "Config" / "EWBad_Gather.ini").write_text(COMMON.replace("EWLocTest", "EWBad") + """[GatherTextStep0]
+CommandletClass=NoSuchCommandletAtAll
+""", encoding="utf-8")
+(GT / "Config" / "EWBad_Export.ini").write_text(COMMON.replace("EWLocTest", "EWBad") + """[GatherTextStep0]
+CommandletClass=InternationalizationExport
+bExportLoc=true
+POFormat=Unreal
+""", encoding="utf-8")
+CD = "Saved/Enginewright/loc_gather_test/Config"
+run_dirs = []
+
+
+def rt(path):
+    """Text of a file the engine wrote: UTF-16 (manifest) or UTF-8, with or without BOM."""
+    b = pathlib.Path(path).read_bytes()
+    if b[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return b.decode("utf-16")
+    return b.decode("utf-8-sig")
+
+
+def lg(args, **kw):
+    r = c("loc_gather", dict({"target": "EWLocTest", "configDir": CD}, **args), **kw)
+    out = (r.get("data") or {}).get("out")
+    if out:
+        run_dirs.append(out)
+    return r
+
+
+def step(r, name):
+    return next((s for s in (r.get("data") or {}).get("steps", []) if s.get("step") == name), {})
+
+
+r = lg({"dryRun": True})
+d = r.get("data") or {}
+check("loc_gather dryRun: commands with -run=GatherText for gather and compile, configs listed, nothing started",
+      r["ok"] and len(d.get("commands", [])) == 2 and all("-run=GatherText" in x and "-config=" in x for x in d["commands"])
+      and set(d.get("configs", {})) == {"gather", "compile"} and not pathlib.Path(d["out"]).exists(), r)
+r = lg({"target": "Nope"})
+check("unknown target -> CONFIG_NOT_FOUND, suggests the targets found in configDir", not r["ok"] and r["errorCode"] == "CONFIG_NOT_FOUND"
+      and "EWLocTest" in r.get("suggestions", []), r)
+r = lg({"steps": ["gather", "polish"]})
+check("unknown step -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] in ("INVALID_ARGUMENT", "INVALID_ENUM"), r)
+r = lg({"steps": ["gather", "gather"]})
+check("a step listed twice -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = lg({"target": "../Game"})
+check("target as a path -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = lg({"timeout": 0})
+check("timeout 0 -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = lg({"steps": ["check"]})
+check("check alone, before any gather: no process, verdict ISSUES (manifest and files missing), run ok",
+      r["ok"] and r["data"]["verdict"] == "ISSUES" and r["data"]["check"]["clean"] is False and r["data"]["check"]["manifestExists"] is False, r)
+
+# the real commandlet, while this editor is open and holds port 3100
+r = lg({"steps": ["gather", "export", "compile", "check"], "wait": 0})
+rid = (r.get("data") or {}).get("id")
+check("wait 0 -> STILL_RUNNING with an id (the commandlet keeps running)", r.get("errorCode") == "STILL_RUNNING" and rid, r)
+b = lg({"steps": ["check"]})
+check("a second loc_gather while one runs -> BUSY", b.get("errorCode") == "BUSY", b)
+r = c("loc_gather_status", {"id": rid, "wait": 400}, timeout=450)
+d = r.get("data") or {}
+check("status waits for the result: gather, export and compile PASSED, check found the untranslated Turkish entries -> ISSUES (run ok)",
+      r["ok"] and d.get("verdict") == "ISSUES" and [step(r, s).get("verdict") for s in ("gather", "export", "compile")] == ["PASSED"] * 3, r)
+check("commandlet ends with exit code 0 and logs it (no MCP port clash with the open editor)",
+      all(step(r, s).get("exitCode") == 0 and step(r, s).get("reportedExitCode") == 0 for s in ("gather", "export", "compile")), d.get("steps"))
+log = pathlib.Path(step(r, "gather").get("log", "x"))
+check("gather log exists and the commandlet did not start an Enginewright server", log.is_file() and "GatherText completed with exit code 0" in log.read_text(encoding="utf-8", errors="replace")
+      and "MCP server on" not in log.read_text(encoding="utf-8", errors="replace"), str(log))
+manifest = pathlib.Path(DEST) / "EWLocTest.manifest"
+check("independent read-back: the manifest holds the probe texts", manifest.is_file() and "Hello from the probe" in rt(manifest) and "You have {0} gold" in rt(manifest), str(manifest))
+ck = d.get("check") or {}
+tr = next((x for x in ck.get("cultures", []) if x["culture"] == "tr"), {})
+check("check: tr po has 2 entries, both untranslated; tr locres written; native en is not judged",
+      tr.get("po", {}).get("entries") == 2 and tr["po"].get("untranslated") == 2 and tr.get("locres", {}).get("exists") is True
+      and next(x for x in ck["cultures"] if x["culture"] == "en")["po"].get("untranslated") == 0 and any("untranslated" in i for i in ck["issues"]), ck)
+s = c("loc_gather_status", {"id": rid})
+check("status of a finished run gives the same report", s["ok"] and s["data"]["id"] == rid and s["data"]["verdict"] == "ISSUES", s)
+check("summary.json written", pathlib.Path(d.get("summary", "x")).is_file(), d.get("summary"))
+
+# fill the Turkish translations, import, compile: the check is clean and the compiled file reads back
+TRPO = pathlib.Path(DEST) / "tr" / "EWLocTest.po"
+txt = rt(TRPO).replace("\r\n", "\n")
+txt = txt.replace('msgid "Hello from the probe"\nmsgstr ""', 'msgid "Hello from the probe"\nmsgstr "Probeden merhaba"')
+txt = txt.replace('msgid "You have {0} gold"\nmsgstr ""', 'msgid "You have {0} gold"\nmsgstr "{0} altının var"')
+TRPO.write_text(txt, encoding="utf-8")
+r = lg({"steps": ["import", "compile", "check"], "wait": 400}, timeout=450)
+d = r.get("data") or {}
+check("import + compile + check after filling the po -> PASSED, check clean", r["ok"] and d.get("verdict") == "PASSED" and d["check"]["clean"] is True
+      and [step(r, s).get("verdict") for s in ("import", "compile")] == ["PASSED", "PASSED"], r)
+LRES = str(pathlib.Path(DEST) / "tr" / "EWLocTest.locres")
+CSV2 = GT / "Source.csv"
+CSV2.write_text("Key,SourceString\nProbe.Hello,Hello from the probe\nProbe.Gold,You have {0} gold\n", encoding="utf-8")
+r = c("stringtable_compare", {"sourceCsv": str(CSV2), "locres": LRES, "namespace": "EWLocTest"})
+check("the .locres the commandlet compiled reads back through stringtable_compare: complete, translated, hashes match (clean)",
+      r["ok"] and r["data"]["translationEntries"] == 2 and r["data"]["clean"] is True and r["data"]["counts"]["sameAsSource"] == 0, r)
+
+# a step that fails: the run stops there, later steps are skipped
+r = lg({"target": "EWBad", "steps": ["gather", "export"], "wait": 300}, timeout=350)
+d = r.get("data") or {}
+check("a commandlet that cannot run -> RUN_NOT_PASSED, the step's verdict and exit codes reported, later steps skipped",
+      not r["ok"] and r.get("errorCode") == "RUN_NOT_PASSED" and step(r, "gather").get("verdict") == "FAILED" and step(r, "gather").get("exitCode") != 0 and step(r, "gather").get("errorCount", 0) >= 1
+      and d.get("skipped") == ["export"], r)
+
+# stop a running commandlet
+r = lg({"steps": ["gather"], "wait": 0})
+rid = (r.get("data") or {}).get("id")
+s = c("loc_gather_status", {"id": rid, "stop": True}, timeout=60)
+check("stop ends the running commandlet -> verdict STOPPED", not s["ok"] and s["data"]["verdict"] == "STOPPED" and step(s, "gather").get("verdict") == "STOPPED", s)
+s = c("loc_gather_status", {"id": "nope"})
+check("unknown run id -> NO_RUN", s.get("errorCode") == "NO_RUN", s)
+s, dr = rpc("tools/call", {"name": "describe", "arguments": {"name": "loc_gather"}})
+dd = dr["result"]["structuredContent"] if s == 200 else {}
+check("loc_gather description: steps, the exit-code rule, no port clash; every argument documented", dd["ok"] and "GatherText completed with exit code" in dd["data"]["description"]
+      and all(v.get("description") for v in dd["data"]["inputSchema"]["properties"].values()), dd)
+
+for out in set(run_dirs):
+    shutil.rmtree(out, ignore_errors=True)
+shutil.rmtree(GT, ignore_errors=True)
+check("loc_gather test files removed", not GT.exists())
 
 r = c("loc_culture")
 check("loc_culture reads the language", r["ok"] and r["data"]["language"], r)

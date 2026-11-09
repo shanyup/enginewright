@@ -42,19 +42,36 @@ Fixes from using v0.3 on a real game project, and the contribution setup:
 - Editor UI: status bar indicator (port, state, clients) and the Enginewright panel (server on/off, port, token, client configs, clients, tool categories, read-only mode, log level, recent calls, doctor); settings in Project Settings; `editor_capture`.
 - Issue forms (tool request, bug report), pull request template, [CONTRIBUTING.md](../CONTRIBUTING.md), [REQUEST_WITH_AI.md](REQUEST_WITH_AI.md) and labelled good first issues.
 
-## v0.4 (next)
+## Version plan
 
-Requests from localizing a real game (English source, Turkish translation):
+A new feature raises the second number (0.x.0); a fix only raises the third (0.x.y). The 0.x releases grow with the games that use Enginewright; 1.0.0 is the launch update.
 
-- `stringtable_compare` against a `.po` / `.locres` translation, not only between two String Tables.
-- One tool for localization gather / compile / check, that also works while the editor holds the MCP port.
-- `game_run` `culture` (the game process gets the language, not only the editor).
-- Font glyph coverage: report the characters of a language that a project font cannot draw (tofu), and glyph misses in `game_run`.
-- MVVM.
+## v0.4 (next): localization
 
-## Later (not started)
+Requests from localizing a real game (English source, Turkish translation). Done on the `dev` branch, not released yet:
 
-- Behavior Tree / StateTree editing; AnimBP state machines.
-- Niagara, Sequencer and other larger editor areas.
-- A headless mode (same tools with the editor closed), packaging, localization.
-- Testing and prebuilt zips for older engine versions (5.4 to 5.7) and other platforms.
+- Done: `stringtable_compare` reads a `.po` or `.locres` translation and a CSV source, not only two String Tables; it also reports translations made for an older source text and fuzzy entries.
+- Done: `loc_gather` / `loc_gather_status`: gather, export, import, compile and check of a localization target in one call; the commandlet no longer starts an MCP server, so it works while the editor is open; the verdict uses both exit codes.
+- Done: `game_run` `culture` (the game process gets the language, not only the editor).
+- Done: `font_coverage` (characters of a language that a font cannot draw) and `game_run` `glyphMisses` (characters Slate could not draw in the running game).
+- Open: MVVM.
+
+## v0.5: what the RagnaCook demo still needs
+
+- Behavior Tree / StateTree editing.
+- AnimBP state machines.
+
+## v0.6: API freeze
+
+- Clean-up before 1.0.0: names, arguments and error codes are reviewed and fixed. No new tools.
+
+## 1.0.0: the launch update
+
+Built on `dev` while the 0.x releases go out; none of it reaches the public `main` before 1.0.0. If a game needs one of these earlier, the feature is built on `dev` and the game uses `dev`.
+
+- A headless mode (the same tools with the editor closed).
+- Niagara and Sequencer.
+- Testing and prebuilt zips for UE 5.4 to 5.8 (and other platforms).
+- FAB listing and a release-ready agent skill.
+- A stability promise for the API: breaking changes only in 2.0.
+- A showcase: a demo video of a game built from start to end with Enginewright, and a new README.

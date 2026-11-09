@@ -38,6 +38,8 @@ void RegisterUMGTools(FEWRegistry& R);
 void RegisterGameplayTagTools(FEWRegistry& R);
 void RegisterUIRuntimeTools(FEWRegistry& R);
 void RegisterLocalizationTools(FEWRegistry& R);
+void RegisterLocGatherTools(FEWRegistry& R);
+void EWStopLocRuns();
 void RegisterGameRunTools(FEWRegistry& R);
 void RegisterImageTools(FEWRegistry& R);
 void RegisterEditorUITools(FEWRegistry& R);
@@ -165,6 +167,7 @@ void FEnginewrightModule::StartupModule()
 	RegisterUIRuntimeTools(Reg);
 	Reg.SetCategory(TEXT("Localization"));
 	RegisterLocalizationTools(Reg);
+	RegisterLocGatherTools(Reg);
 	Reg.SetCategory(TEXT("Images"));
 	RegisterImageTools(Reg);
 	Reg.SetCategory(TEXT("Editor"));
@@ -179,7 +182,13 @@ void FEnginewrightModule::StartupModule()
 	}
 	Token = Token.TrimStartAndEnd();
 
-	if (GetDefault<UEnginewrightSettings>()->bServerEnabled)
+	if (IsRunningCommandlet())
+	{
+		// A commandlet (GatherText, cook, ...) running next to an open editor would try the editor's port and fail with exit code 1.
+		Port = WantedPort();
+		UE_LOG(LogTemp, Display, TEXT("Enginewright: running as a commandlet; the MCP server is not started."));
+	}
+	else if (GetDefault<UEnginewrightSettings>()->bServerEnabled)
 	{
 		StartServer();
 	}
@@ -246,6 +255,7 @@ void FEnginewrightModule::StopServer()
 
 void FEnginewrightModule::ApplySettings()
 {
+	if (IsRunningCommandlet()) { return; }
 	if (!GetDefault<UEnginewrightSettings>()->bServerEnabled)
 	{
 		if (Router.IsValid())
@@ -289,6 +299,7 @@ void FEnginewrightModule::ShutdownModule()
 	EWUI::Unregister();
 	UEnginewrightSettings::OnChanged().Remove(SettingsChangedHandle);
 	EWStopGameRuns();
+	EWStopLocRuns();
 	StopServer();
 	EW::RemoveLogCapture();
 }
