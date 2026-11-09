@@ -31,7 +31,7 @@ Tested on UE 5.8 Win64 only.
 - Done: running the game from the editor: `game_run` / `game_run_status` (the game in `-game` mode or a packaged exe, with a map URL checked against its log, one run per resolution, verdict from log patterns, filtered log lines, PNG collection), `image_compose` (labelled side-by-side PNG). No Python needed.
 - Done: optional `Scripts/ewtool.py` for the one job outside the editor (see [EWTOOL.md](EWTOOL.md)): compiling while the editor is closed (waits for locks and other builds, names the process holding a DLL, UBT runs detached and outlives a killed caller).
 
-## v0.3.1 (current)
+## v0.3.1 (done, current release)
 
 Fixes from using v0.3 on a real game project, and the contribution setup:
 
@@ -44,6 +44,12 @@ Fixes from using v0.3 on a real game project, and the contribution setup:
 
 ## v0.4 (next)
 
+Requests from localizing a real game (English source, Turkish translation):
+
+- `stringtable_compare` against a `.po` / `.locres` translation, not only between two String Tables.
+- One tool for localization gather / compile / check, that also works while the editor holds the MCP port.
+- `game_run` `culture` (the game process gets the language, not only the editor).
+- Font glyph coverage: report the characters of a language that a project font cannot draw (tofu), and glyph misses in `game_run`.
 - MVVM.
 
 ## Later (not started)
