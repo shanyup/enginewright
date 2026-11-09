@@ -37,6 +37,7 @@ void RegisterMeasureTools(FEWRegistry& R);
 void RegisterUMGTools(FEWRegistry& R);
 void RegisterGameplayTagTools(FEWRegistry& R);
 void RegisterUIRuntimeTools(FEWRegistry& R);
+void RegisterMVVMTools(FEWRegistry& R);
 void RegisterLocalizationTools(FEWRegistry& R);
 void RegisterLocGatherTools(FEWRegistry& R);
 void EWStopLocRuns();
@@ -165,6 +166,7 @@ void FEnginewrightModule::StartupModule()
 	Reg.SetCategory(TEXT("UI"));
 	RegisterUMGTools(Reg);
 	RegisterUIRuntimeTools(Reg);
+	RegisterMVVMTools(Reg);
 	Reg.SetCategory(TEXT("Localization"));
 	RegisterLocalizationTools(Reg);
 	RegisterLocGatherTools(Reg);

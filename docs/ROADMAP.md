@@ -54,7 +54,7 @@ Requests from localizing a real game (English source, Turkish translation). Done
 - Done: `loc_gather` / `loc_gather_status`: gather, export, import, compile and check of a localization target in one call; the commandlet no longer starts an MCP server, so it works while the editor is open; the verdict uses both exit codes.
 - Done: `game_run` `culture` (the game process gets the language, not only the editor).
 - Done: `font_coverage` (characters of a language that a font cannot draw) and `game_run` `glyphMisses` (characters Slate could not draw in the running game).
-- Open: MVVM.
+- Done: MVVM tools `viewmodel_list`, `viewmodel_add`, `viewmodel_bind`, `viewmodel_unbind`, `viewmodel_remove` (view models and view bindings of a Widget Blueprint, with conversion functions, one undo step, compile and read-back). They live in the optional `EnginewrightMVVM` plugin: Enginewright loads without the MVVM plugin, never enables it, and the tools answer `MVVM_NOT_ENABLED` until both plugins are on.
 
 ## v0.5: what the RagnaCook demo still needs
 
