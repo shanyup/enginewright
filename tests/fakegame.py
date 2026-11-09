@@ -3,7 +3,7 @@
 Called as: python fakegame.py <url> [-ResX=W -ResY=H ...] -abslog=<file> ...
 The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|shothang|slowdone|nolog|quiet, Shots=<dir> (writes ShotCount PNGs, default 1,
 of the requested size there), Mangle=1 (logs a command line with the URL cut at the first '=', like a broken
-batch file), Code=<n> (exit code).
+batch file), Code=<n> (exit code), Glyph=1 (logs Slate 'Could not find Glyph Index' warnings).
 """
 import os, sys, time
 
@@ -39,6 +39,9 @@ if mode == "quiet":
     sys.exit(0)
 say("SELFTEST Logic start")
 say("[Save] slot=Test01 written")
+if opt.get("Glyph"):
+    for cp in ("0130", "011E", "0130"):
+        say(f"LogSlate: Warning: Could not find Glyph Index for character U+{cp} in font Roboto-Regular")
 if opt.get("Shots"):
     w, h = int(val("ResX") or 64), int(val("ResY") or 32)
     os.makedirs(opt["Shots"], exist_ok=True)

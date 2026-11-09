@@ -56,6 +56,18 @@ namespace
 		return false;
 	}
 
+	/** Code point of a Slate "Could not find Glyph Index" line (U+0130), or false when the line names none. */
+	bool GlyphMissCodePoint(const FString& L, uint32& Cp)
+	{
+		const int32 At = L.Find(TEXT("U+"), ESearchCase::CaseSensitive);
+		if (At == INDEX_NONE) { return false; }
+		int32 End = At + 2;
+		while (End < L.Len() && End < At + 8 && FChar::IsHexDigit(L[End])) { ++End; }
+		if (End == At + 2) { return false; }
+		Cp = (uint32)FCString::Strtoi(*L.Mid(At + 2, End - At - 2), nullptr, 16);
+		return true;
+	}
+
 	bool IsCrashLine(const FString& L)
 	{
 		return L.Contains(TEXT("Fatal error")) || L.Contains(TEXT("Unhandled Exception")) || L.Contains(TEXT("=== Critical error ===")) ||
@@ -412,9 +424,19 @@ namespace
 		ScanNewLines(R);
 		TArray<FString> Lines;
 		R.Text.ParseIntoArrayLines(Lines, false);
-		TArray<FString> Keep, Fails, Passes, Crash;
+		TArray<FString> Keep, Fails, Passes, Crash, GlyphCps;
+		int32 GlyphMisses = 0;
+		FString GlyphSample;
 		for (const FString& L : Lines)
 		{
+			if (L.Contains(TEXT("Could not find Glyph Index")))
+			{
+				// ER-13: Slate could not draw a character (tofu). Count every line, keep the first code points.
+				++GlyphMisses;
+				if (GlyphSample.IsEmpty()) { GlyphSample = L.Left(300); }
+				uint32 Cp;
+				if (GlyphMissCodePoint(L, Cp)) { const FString Name = FString::Printf(TEXT("U+%04X"), Cp); if (GlyphCps.Num() < 50) { GlyphCps.AddUnique(Name); } }
+			}
 			const bool bF = AnyMatch(R.Fail, L), bP = AnyMatch(R.Pass, L), bC = IsCrashLine(L);
 			bool bFilter = false;
 			for (const FString& F : R.S.Filters) { if (L.Contains(F)) { bFilter = true; break; } }
@@ -442,6 +464,14 @@ namespace
 		if (!R.CommandLineSeen.IsEmpty()) { C->SetStringField(TEXT("commandLineSeen"), R.CommandLineSeen); }
 		C->SetArrayField(TEXT("lines"), JStrings(Keep, R.S.MaxLines));
 		C->SetNumberField(TEXT("lineCount"), Keep.Num());
+		C->SetNumberField(TEXT("glyphMisses"), GlyphMisses);
+		if (GlyphMisses > 0)
+		{
+			C->SetArrayField(TEXT("glyphMissCodePoints"), JStrings(GlyphCps));
+			C->SetStringField(TEXT("glyphMissSample"), GlyphSample);
+			R.Warnings.Add(FString::Printf(TEXT("Run %s: the game could not draw %d character(s)%s (Slate 'Could not find Glyph Index': empty boxes on screen). Check the fonts with font_coverage."),
+				*R.Tag, GlyphMisses, GlyphCps.Num() ? *(TEXT(": ") + FString::Join(GlyphCps, TEXT(" "))) : TEXT("")));
+		}
 		C->SetArrayField(TEXT("failLines"), JStrings(Fails, 50));
 		C->SetArrayField(TEXT("crashLines"), JStrings(Crash, 20));
 		C->SetArrayField(TEXT("screenshots"), CollectPngs(R, Res));
@@ -764,7 +794,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 		TEXT("Start the game itself (UnrealEditor <project> <url> -game, or a packaged exe) once per resolution and report: did the URL arrive unchanged (checked in the game's own log), PASSED/FAILED from your patterns, the log lines you asked for, crash lines, and the new PNG files (screenshots) with their real size. ")
 		TEXT("Use it for self-tests and screenshot runs at several resolutions. The editor stays usable while the game runs. The game loads the C++ modules built on disk, not the editor's memory: after C++ changes rebuild with editor_restart {\"build\": true}. Live Coding patches only the open editor, so game_run refuses to start after a Live Coding patch (allowLiveCodingPatch overrides). ")
 		TEXT("While the game runs, the editor's realtime level viewports are paused (editorViewports) and a heavy editor level is reported. Screenshot runs (e.g. -ExecCmds=HighResShot) end with shotsExpected: the run is PASSED when that many new PNG files are written. ")
-		TEXT("The game is a separate process: loc_culture changes only the editor's language and does not reach it. Pass culture (e.g. tr) to start the game with -culture=tr. Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
+		TEXT("The game is a separate process: loc_culture changes only the editor's language and does not reach it. Pass culture (e.g. tr) to start the game with -culture=tr. Each run reports glyphMisses: how often Slate logged 'Could not find Glyph Index' (a character the font cannot draw, shown as an empty box) with the first code points; font_coverage checks a font before the run. Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
 		TEXT(R"({"type":"object","properties":{
 			"url":{"type":"string","description":"Map and options passed as one argument, unchanged, e.g. /Game/Maps/Test?SelfTest=Logic?Shots={shots}?Quit=1"},
 			"resolutions":{"type":"array","description":"Resolutions as \"WxH\" strings, one run each in order (e.g. [\"1920x1080\",\"1280x720\"]). Default: one run at the game's own size."},

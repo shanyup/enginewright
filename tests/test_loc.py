@@ -3,7 +3,7 @@ comparison, and switching the editor language. Writes only under /Game/_EWTest.
 """
 import os, shutil, struct, sys, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ewtest import PROJ, ROOT, call as c, check, delete_if_exists, done, ensure_stopped
+from ewtest import PROJ, ROOT, call as c, check, delete_if_exists, done, ensure_stopped, rpc
 
 ensure_stopped()
 SRC, TR = ROOT + "/ST_EWSource", ROOT + "/ST_EWSource_TR"
@@ -199,6 +199,113 @@ r = c("stringtable_compare", {"source": SRC, "translation": SRC})
 check("table vs itself is still refused", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 shutil.rmtree(LOC, ignore_errors=True)
 check("test files removed", not LOC.exists())
+
+# ---------------------------------------------------------------- ER-13: font_coverage
+FONTS = PROJ / "Saved" / "Enginewright" / "font_test"   # this test's own folder, removed at the end
+shutil.rmtree(FONTS, ignore_errors=True)
+FONTS.mkdir(parents=True)
+
+
+def u16(v): return struct.pack(">H", v)
+def u32(v): return struct.pack(">I", v)
+
+
+def sfnt(cmap):
+    """A TrueType file that holds only a cmap table (all font_coverage reads)."""
+    head = u32(0x00010000) + u16(1) + u16(16) + u16(0) + u16(0)
+    rec = b"cmap" + u32(0) + u32(12 + 16) + u32(len(cmap))
+    return head + rec + cmap
+
+
+def cmap_format4(segments, arrays=None):
+    """segments: [(start, end, kind, value)]: kind 'delta' (glyph = cp + value) or 'array' (value = index into arrays)."""
+    segs = segments + [(0xFFFF, 0xFFFF, "delta", 1)]
+    n = len(segs)
+    ends = b"".join(u16(s[1]) for s in segs)
+    starts = b"".join(u16(s[0]) for s in segs)
+    deltas = b"".join(u16(s[3] & 0xFFFF) if s[2] == "delta" else u16(0) for s in segs)
+    offs = b""
+    for i, s in enumerate(segs):
+        offs += u16(0) if s[2] == "delta" else u16((n - i) * 2 + s[3] * 2)
+    glyphs = b"".join(u16(g) for g in (arrays or []))
+    body = u16(n * 2) + u16(0) + u16(0) + u16(0) + ends + u16(0) + starts + deltas + offs + glyphs
+    sub = u16(4) + u16(6 + len(body)) + u16(0) + body
+    return u16(0) + u16(1) + u16(3) + u16(1) + u32(12) + sub
+
+
+def cmap_format12(groups):
+    body = b"".join(u32(s) + u32(e) + u32(g) for s, e, g in groups)
+    sub = u16(12) + u16(0) + u32(16 + len(body)) + u32(0) + u32(len(groups)) + body
+    return u16(0) + u16(1) + u16(3) + u16(10) + u32(12) + sub
+
+
+TR = "\u00c7\u011e\u0130\u00d6\u015e\u00dc\u00e7\u011f\u0131\u00f6\u015f\u00fc"   # Ç Ğ İ Ö Ş Ü ç ğ ı ö ş ü
+# Latin + Ç ç ö ü ğ ı ş as single segments, Ö and Ü through a glyph array (gaps = glyph 0); Ğ İ Ş are missing.
+f4 = [(0x41, 0x5A, "delta", 1 - 0x41), (0x61, 0x7A, "delta", 27 - 0x61), (0xC7, 0xC7, "delta", 100 - 0xC7), (0xD6, 0xDC, "array", 0),
+      (0xE7, 0xE7, "delta", 101 - 0xE7), (0xF6, 0xF6, "delta", 102 - 0xF6), (0xFC, 0xFC, "delta", 103 - 0xFC),
+      (0x11F, 0x11F, "delta", 104 - 0x11F), (0x131, 0x131, "delta", 105 - 0x131), (0x15F, 0x15F, "delta", 106 - 0x15F)]
+(FONTS / "Partial.ttf").write_bytes(sfnt(cmap_format4(f4, [110, 0, 0, 0, 0, 0, 111])))
+(FONTS / "Wide.otf").write_bytes(sfnt(cmap_format12([(0x41, 0x5A, 1), (0x61, 0x7A, 27), (0xC7, 0x15F, 60), (0x1F600, 0x1F64F, 400)])))
+(FONTS / "NotAFont.ttf").write_bytes(b"definitely not a font file")
+
+r = c("font_coverage", {"font": str(FONTS / "Partial.ttf"), "culture": "tr"})
+d = r.get("data") or {}
+check("font_coverage: file font, culture tr -> exactly Ğ İ Ş missing (format 4 segments, glyph array, gaps)",
+      r["ok"] and [m["codePoint"] for m in d.get("missing", [])] == ["U+011E", "U+0130", "U+015E"] and d.get("missingText") == "\u011e\u0130\u015e"
+      and d.get("kind") == "file" and d.get("clean") is False and d.get("language") == "tr", r)
+check("font_coverage: counts (tr = 52 basic Latin + 12 Turkish letters, 3 missing) and the face list",
+      d.get("checked") == 64 and d.get("covered") == 61 and d.get("missingCount") == 3 and len(d.get("faces", [])) == 1 and d["faces"][0]["missingCount"] == 3, d)
+r = c("font_coverage", {"font": "Saved/Enginewright/font_test/Partial.ttf", "chars": TR})
+d = r.get("data") or {}
+check("font_coverage: project-relative path, chars = the Turkish letters -> the same three missing, 9 of 12 covered",
+      r["ok"] and d.get("covered") == 9 and d.get("checked") == 12 and d.get("missingText") == "\u011e\u0130\u015e", r)
+r = c("font_coverage", {"font": str(FONTS / "Wide.otf"), "culture": "tr"})
+check("font_coverage: format 12 font covers every Turkish letter -> clean", r["ok"] and r["data"]["clean"] is True and r["data"]["missingCount"] == 0, r)
+r = c("font_coverage", {"font": str(FONTS / "Wide.otf"), "chars": "A \u00c7 \U0001F600 \U0001F680 \u3042"})
+d = r.get("data") or {}
+check("font_coverage: supplementary-plane characters (surrogate pairs), spaces skipped; emoji drawn, rocket and kana not",
+      r["ok"] and d.get("checked") == 5 and [m["codePoint"] for m in d["missing"]] == ["U+1F680", "U+3042"], r)
+r = c("font_coverage", {"font": str(FONTS / "Wide.otf"), "chars": "\U0001F600\U0001F600A"})
+check("font_coverage: repeated characters are counted once", r["ok"] and r["data"]["checked"] == 2, r)
+
+r = c("font_coverage", {"font": "/Engine/EngineFonts/Roboto", "culture": "tr"})
+d = r.get("data") or {}
+check("font_coverage: a Font asset (the engine's Roboto) is read through its faces; Turkish is covered",
+      r["ok"] and d.get("kind") == "font" and len(d.get("faces", [])) >= 1 and d.get("clean") is True, r)
+r = c("font_coverage", {"font": "/Engine/EngineFonts/Roboto", "chars": "\u3042\ue123"})
+d = r.get("data") or {}
+dflt = [f for f in d.get("faces", []) if f.get("typeface") == "default"]
+check("font_coverage: a character only the fallback typeface draws (kana) is covered; the default faces list it as missing; a private-use character is missing overall",
+      r["ok"] and dflt and all(f.get("missingCount") == 2 for f in dflt) and [m["codePoint"] for m in d["missing"]] == ["U+E123"]
+      and any(f.get("typeface") == "fallback" and f.get("missingCount") == 1 for f in d["faces"]), r)
+
+r = c("font_coverage", {"font": str(FONTS / "Partial.ttf")})
+check("neither culture nor chars -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("font_coverage", {"font": str(FONTS / "Partial.ttf"), "culture": "tr", "chars": "x"})
+check("both culture and chars -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("font_coverage", {"font": str(FONTS / "Partial.ttf"), "culture": "zz-Nowhere"})
+check("unknown culture -> UNKNOWN_CULTURE", not r["ok"] and r["errorCode"] == "UNKNOWN_CULTURE", r)
+r = c("font_coverage", {"font": str(FONTS / "Partial.ttf"), "culture": "ja"})
+check("a culture without a letter list -> NO_CHAR_TABLE with the known languages", not r["ok"] and r["errorCode"] == "NO_CHAR_TABLE" and "tr" in r.get("suggestions", []), r)
+r = c("font_coverage", {"font": str(FONTS / "Nope.ttf"), "culture": "tr"})
+check("font file that does not exist -> FILE_NOT_FOUND", not r["ok"] and r["errorCode"] == "FILE_NOT_FOUND", r)
+r = c("font_coverage", {"font": str(FONTS / "NotAFont.ttf"), "culture": "tr"})
+check("a file that is not a font -> UNSUPPORTED_FONT", not r["ok"] and r["errorCode"] == "UNSUPPORTED_FONT", r)
+r = c("font_coverage", {"font": str(FONTS / "Partial.txt"), "culture": "tr"})
+check("font with another extension -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("font_coverage", {"font": "/Game/_EWTest/Nope_Font", "culture": "tr"})
+check("unknown font asset -> ASSET_NOT_FOUND", not r["ok"] and r["errorCode"] == "ASSET_NOT_FOUND", r)
+r = c("font_coverage", {"font": SRC, "culture": "tr"})
+check("an asset that is not a font -> NOT_A_FONT", not r["ok"] and r["errorCode"] == "NOT_A_FONT", r)
+r = c("font_coverage", {"font": str(FONTS / "Wide.otf"), "chars": "   "})
+check("chars with nothing to check -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+s, dr = rpc("tools/call", {"name": "describe", "arguments": {"name": "font_coverage"}})
+dd = dr["result"]["structuredContent"] if s == 200 else {}
+check("font_coverage is described: read-only, every argument documented, mentions tofu and game_run",
+      dd.get("ok") and dd["data"]["effect"] == "read" and all(v.get("description") for v in dd["data"]["inputSchema"]["properties"].values())
+      and "tofu" in dd["data"]["description"] and "glyphMisses" in dd["data"]["description"], dd)
+shutil.rmtree(FONTS, ignore_errors=True)
+check("font test files removed", not FONTS.exists())
 
 r = c("loc_culture")
 check("loc_culture reads the language", r["ok"] and r["data"]["language"], r)

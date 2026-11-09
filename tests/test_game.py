@@ -178,6 +178,17 @@ check("game_run description + schema: culture, and that loc_culture does not rea
 d = meta("describe", {"name": "loc_culture"})
 check("loc_culture description says it does not reach game_run", d["ok"] and "game_run" in d["data"]["description"], d)
 
+# ER-13: glyph misses (tofu) counted from the game's log
+r = fake("/Game/Maps/Test?Mode=pass?Glyph=1", **{"pass": ["PASSED"]})
+g = run0(r)
+check("glyphMisses counts the Slate 'Could not find Glyph Index' lines, with the distinct code points", r["ok"] and g.get("glyphMisses") == 3
+      and g.get("glyphMissCodePoints") == ["U+0130", "U+011E"] and "Roboto-Regular" in g.get("glyphMissSample", ""), g)
+check("glyph misses are also a warning that names font_coverage", any("font_coverage" in w and "U+0130" in w for w in r.get("warnings", [])), r.get("warnings"))
+r = fake("/Game/Maps/Test?Mode=pass", **{"pass": ["PASSED"]})
+check("a run without glyph warnings reports glyphMisses 0 and no code points", run0(r).get("glyphMisses") == 0 and "glyphMissCodePoints" not in run0(r), run0(r))
+d = meta("describe", {"name": "game_run"})
+check("game_run description mentions glyphMisses", d["ok"] and "glyphMisses" in d["data"]["description"], d)
+
 # background: reply at once, follow with game_run_status
 r = fake("/Game/Maps/Test?Mode=pass", wait=0, **{"pass": ["PASSED"]})
 rid = (r.get("data") or {}).get("id")
