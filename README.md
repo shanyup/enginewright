@@ -45,7 +45,7 @@ UE 5.8 ships an experimental MCP toolset with a larger tool catalog than Enginew
 
 ## Install (about 5 minutes)
 
-These steps were run as written on a new, empty UE 5.8 project (no C++ code) with the v0.3.0 zip.
+These steps were run as written on a new, empty UE 5.8 project (no C++ code) with the v0.3.1 zip.
 
 **Prebuilt zip (Blueprint or C++ projects, UE 5.8 Win64)**
 
