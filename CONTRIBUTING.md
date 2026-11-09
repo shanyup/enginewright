@@ -41,9 +41,10 @@ The editor locks the plugin DLL. After a C++ change, close the editor and build 
 | Path | What |
 |---|---|
 | `Plugins/Enginewright/Source/Enginewright/Private/Tools/<Area>Tools.cpp` | The tools, one file per area (UMG, PIE, game run, ...). Each file has one `Register<Area>Tools(FEWRegistry&)` function. |
-| `Private/EnginewrightModule.cpp` | Starts the HTTP server and calls every `Register<Area>Tools`. A new tool file needs one line in each of the two lists there. |
+| `Private/EnginewrightModule.cpp` | Starts the HTTP server and calls every `Register<Area>Tools` after `SetCategory(...)` (the category groups tools in the panel and lets a project turn them off). A new tool file needs one declaration and one call there. |
 | `Private/EWRegistry.cpp` | The shared checks for every call: unknown arguments, types, enums, required arguments, the Play In Editor gate, undo transactions. |
 | `Private/EWCommon.h`, `EWProps.h`, `EWTypes.h` | Helpers: argument readers (`EW::Str`, `EW::Num`, `EW::Bool`, `EW::StrList`), asset and class lookup (`EW::LoadAs`, `EW::FindClass`, `EW::Suggest`), property writing with read-back (`EW::WriteValues`), log capture, PNG encoding. |
+| `Private/EWEditorUI.cpp`, `Public/EnginewrightSettings.h` | The status bar indicator, the Enginewright panel (Tools > Enginewright) and the settings behind them (Project Settings > Plugins > Enginewright). |
 | `Plugins/Enginewright/Scripts/ewtool.py` | Optional build helper for when the editor is closed. |
 | `tests/` | Python test suites, one file per area (`test_<suite>.py`), run against a live editor. |
 | `tools/package.py` | Builds the release zip. |

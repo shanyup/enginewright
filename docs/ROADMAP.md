@@ -39,6 +39,7 @@ Fixes from using v0.3 on a real game project, and the contribution setup:
 - `game_run` refuses to start the old C++ code after a Live Coding patch (a new game process loads the DLLs on disk) and warns when C++ source changed after the last build.
 - `game_run` pauses the editor's realtime level viewports while the game runs and reports a heavy editor level (Lumen, real-time sky light, volumetric clouds, many actors).
 - `game_run` `shotsExpected`: screenshot runs (e.g. `HighResShot`) end when the PNG files are written, with a PASSED verdict instead of a timeout.
+- Editor UI: status bar indicator (port, state, clients) and the Enginewright panel (server on/off, port, token, client configs, clients, tool categories, read-only mode, log level, recent calls, doctor); settings in Project Settings; `editor_capture`.
 - Issue forms (tool request, bug report), pull request template, [CONTRIBUTING.md](../CONTRIBUTING.md), [REQUEST_WITH_AI.md](REQUEST_WITH_AI.md) and labelled good first issues.
 
 ## v0.4 (next)

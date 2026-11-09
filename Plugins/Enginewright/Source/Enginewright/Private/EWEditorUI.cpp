@@ -7,7 +7,12 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
+#include "Containers/Ticker.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "ImageUtils.h"
+#include "Misc/Base64.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "ISettingsModule.h"
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
@@ -522,9 +527,52 @@ namespace
 		}
 	};
 
+	TWeakPtr<SWidget> GPanel;
+
 	TSharedRef<SDockTab> SpawnPanel(const FSpawnTabArgs&)
 	{
-		return SNew(SDockTab).TabRole(ETabRole::NomadTab)[SNew(SEWPanel)];
+		TSharedRef<SEWPanel> Panel = SNew(SEWPanel);
+		GPanel = Panel;
+		return SNew(SDockTab).TabRole(ETabRole::NomadTab)[Panel];
+	}
+
+	/** Reads a widget's pixels through Slate, downsizes to MaxWidth, saves a PNG. */
+	FEWResult CaptureWidget(const TSharedRef<SWidget>& Widget, const FString& Target, const TSharedPtr<FJsonObject>& Args)
+	{
+		TArray<FColor> Pixels;
+		FIntVector Size(0, 0, 0);
+		if (!FSlateApplication::Get().TakeScreenshot(Widget, Pixels, Size) || Size.X <= 0 || Size.Y <= 0 || Pixels.Num() != Size.X * Size.Y)
+		{
+			return FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("Slate could not draw the widget (window minimized or hidden?)."));
+		}
+		int32 W = Size.X, H = Size.Y;
+		const int32 MaxWidth = (int32)EW::Num(Args, TEXT("maxWidth"), 1600);
+		if (MaxWidth > 0 && W > MaxWidth)
+		{
+			const int32 NW = MaxWidth, NH = FMath::Max(1, FMath::RoundToInt((double)H * NW / W));
+			TArray<FColor> Small;
+			FImageUtils::ImageResize(W, H, Pixels, NW, NH, Small, /*bLinearSpace*/ false, /*bForceOpaqueOutput*/ true);
+			Pixels = MoveTemp(Small);
+			W = NW; H = NH;
+		}
+		for (FColor& C : Pixels) { C.A = 255; }
+		TArray64<uint8> Png;
+		if (!EW::EncodePng(Pixels, W, H, Png)) { return FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("PNG encoding failed.")); }
+		FString File = EW::Str(Args, TEXT("file"));
+		if (File.IsEmpty())
+		{
+			File = FPaths::ProjectSavedDir() / TEXT("Enginewright/Screenshots") / FString::Printf(TEXT("editor_%s_%s.png"), *Target, *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S_%s")));
+		}
+		File = FPaths::ConvertRelativePathToFull(File);
+		if (!FFileHelper::SaveArrayToFile(Png, *File)) { return FEWResult::Error(TEXT("SAVE_FAILED"), FString::Printf(TEXT("Could not write %s."), *File)); }
+		TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("target"), Target);
+		Data->SetStringField(TEXT("file"), File);
+		Data->SetNumberField(TEXT("width"), W);
+		Data->SetNumberField(TEXT("height"), H);
+		FEWResult Out = FEWResult::Ok(Data);
+		if (EW::Bool(Args, TEXT("inline"), true)) { Out.Images.Emplace(TEXT("image/png"), FBase64::Encode(Png.GetData(), Png.Num())); }
+		return Out;
 	}
 
 	void RegisterMenus()
@@ -535,6 +583,56 @@ namespace
 		FToolMenuSection& Section = Bar->AddSection(TEXT("Enginewright"), FText::GetEmpty(), FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
 		Section.AddEntry(FToolMenuEntry::InitWidget(TEXT("EnginewrightStatus"), SNew(SEWStatusIndicator), FText::GetEmpty(), true, false));
 	}
+}
+
+void RegisterEditorUITools(FEWRegistry& R)
+{
+	R.RegisterAsync(TEXT("editor_capture"),
+		TEXT("Capture the editor's own UI to a PNG: the main editor window (with the status bar), or the Enginewright panel (opened first). For game or level views use screenshot."),
+		TEXT(R"({"type":"object","properties":{
+			"target":{"type":"string","enum":["window","panel"],"description":"window = the main editor window; panel = the Enginewright panel (Tools > Enginewright)."},
+			"file":{"type":"string","description":"PNG path to write. Default: Saved/Enginewright/Screenshots/editor_<target>_<time>.png."},
+			"maxWidth":{"type":"integer","minimum":0,"description":"Downsize to this width (0 = full size). Default 1600."},
+			"inline":{"type":"boolean","description":"Also return the image in the reply. Default true."}},
+			"required":["target"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			if (!FSlateApplication::IsInitialized())
+			{
+				Done(FEWResult::Error(TEXT("NO_UI"), TEXT("This editor runs without UI (commandlet or -nullrhi).")));
+				return;
+			}
+			const FString Target = EW::Str(Args, TEXT("target"));
+			if (Target == TEXT("panel")) { OpenPanel(); }
+			// Two frames so a just-opened tab has its layout before Slate draws it.
+			TSharedRef<int32> Frames = MakeShared<int32>(0);
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Args, Target, Done, Frames](float) mutable
+			{
+				if (++(*Frames) < 3) { return true; }
+				TSharedPtr<SWidget> Widget;
+				if (Target == TEXT("panel"))
+				{
+					Widget = GPanel.Pin();
+					if (!Widget.IsValid())
+					{
+						Done(FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("The Enginewright panel did not open.")));
+						return false;
+					}
+				}
+				else
+				{
+					Widget = FGlobalTabmanager::Get()->GetRootWindow();
+					if (!Widget.IsValid())
+					{
+						Done(FEWResult::Error(TEXT("CAPTURE_FAILED"), TEXT("No main editor window.")));
+						return false;
+					}
+				}
+				Done(CaptureWidget(Widget.ToSharedRef(), Target, Args));
+				return false;
+			}));
+		});
 }
 
 namespace EWUI

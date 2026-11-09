@@ -40,6 +40,7 @@ void RegisterUIRuntimeTools(FEWRegistry& R);
 void RegisterLocalizationTools(FEWRegistry& R);
 void RegisterGameRunTools(FEWRegistry& R);
 void RegisterImageTools(FEWRegistry& R);
+void RegisterEditorUITools(FEWRegistry& R);
 void EWStopGameRuns();
 namespace EW
 {
@@ -130,6 +131,7 @@ void FEnginewrightModule::StartupModule()
 	RegisterSettingsLogTools(Reg);
 	RegisterBatchTool(Reg);
 	RegisterClientTools(Reg);
+	RegisterEditorUITools(Reg);
 	Reg.SetCategory(TEXT("Objects"));
 	RegisterObjectTools(Reg);
 	RegisterTypeTools(Reg);

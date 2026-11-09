@@ -73,7 +73,21 @@ These steps were run as written on a new, empty UE 5.8 project (no C++ code) wit
 2. Build your project's editor target (or open the `.uproject` and accept the rebuild prompt).
 3. Continue with step 3 above.
 
-To use another port, set the `ENGINEWRIGHT_PORT` environment variable before starting the editor.
+To use another port, change it in the Enginewright panel, or set the `ENGINEWRIGHT_PORT` environment variable before starting the editor (the variable wins).
+
+### The Enginewright panel
+
+The status bar shows `Enginewright :3100 (n)` at the bottom right: a green dot while the server listens, red when it is off or the port is in use, and the number of clients seen in the last 5 minutes. Click it (or Tools > Enginewright) to open the panel:
+
+<!-- PANEL_SCREENSHOT -->
+
+- turn the server on or off, change the port;
+- show, copy or renew the token; copy a ready config for Claude Code, Codex, Cursor, VS Code or Hermes with one click;
+- see which clients talked to this editor and the last calls with their result and time;
+- turn whole tool categories off, or switch to read-only mode (tools that change the project are refused);
+- set the Output Log level, run `doctor`.
+
+The same settings are in Project Settings > Plugins > Enginewright, saved per user and project. Agents can read and change them with `settings_get` / `settings_set` on `EnginewrightSettings`, so read-only mode is a guard against accidents, not a security boundary.
 
 ## Tools
 
@@ -98,7 +112,7 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Gameplay Tags | `gameplay_tags_list`, `gameplay_tag_add` (to a tag ini, strict names), `gameplay_tag_remove` (refused while assets use the tag) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
-| Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config` |
+| Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config`, `editor_capture` (the editor window or the Enginewright panel to PNG) |
 | Multi-step | `batch` (atomic, rolls back on failure) |
 
 ### Optional: compiling while the editor is closed
