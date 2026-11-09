@@ -172,7 +172,7 @@ void RegisterBuildTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("live_coding_compile"),
-		TEXT("Compile changed C++ .cpp files with Live Coding and patch the running editor (Windows). Header, constructor default and Build.cs changes need editor_restart instead. Waits for the result."),
+		TEXT("Compile changed C++ .cpp files with Live Coding and patch the running editor (Windows). Header, constructor default and Build.cs changes need editor_restart instead. Waits for the result. The patch lives only in this editor's memory: a game started with game_run loads the DLLs on disk, so rebuild with editor_restart {\"build\": true} before game_run."),
 		TEXT(R"({"type":"object","properties":{}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>&) -> FEWResult

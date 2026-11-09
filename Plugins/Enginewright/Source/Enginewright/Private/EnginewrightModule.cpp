@@ -1,6 +1,7 @@
 #include "EnginewrightModule.h"
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
+#include "EnginewrightSettings.h"
 
 #include "HAL/PlatformMisc.h"
 #include "HttpPath.h"
@@ -45,6 +46,11 @@ namespace EW
 	void InstallLogCapture();
 	void RemoveLogCapture();
 	void WriteClientConfigs(const FString& Url, const FString& Token, const FString& Dir);
+}
+namespace EWUI
+{
+	void Register();
+	void Unregister();
 }
 
 static const TCHAR* GInstructions =
@@ -109,39 +115,57 @@ FString FEnginewrightModule::GetUrl() const
 	return FString::Printf(TEXT("http://127.0.0.1:%u/mcp"), Port);
 }
 
+FEnginewrightModule& FEnginewrightModule::Get()
+{
+	return FModuleManager::GetModuleChecked<FEnginewrightModule>(TEXT("Enginewright"));
+}
+
 void FEnginewrightModule::StartupModule()
 {
 	FEWRegistry& Reg = FEWRegistry::Get();
 	EW::InstallLogCapture();
+	// Categories group the tools in the panel and let a project turn whole areas off ("Editor" stays on).
+	Reg.SetCategory(TEXT("Editor"));
 	RegisterEditorTools(Reg);
-	RegisterObjectTools(Reg);
-	RegisterAssetTools(Reg);
-	RegisterDataTableTools(Reg);
-	RegisterSceneTools(Reg);
 	RegisterSettingsLogTools(Reg);
 	RegisterBatchTool(Reg);
 	RegisterClientTools(Reg);
+	Reg.SetCategory(TEXT("Objects"));
+	RegisterObjectTools(Reg);
 	RegisterTypeTools(Reg);
-	RegisterBlueprintTools(Reg);
-	RegisterPieTools(Reg);
-	RegisterBuildTools(Reg);
-	RegisterMaterialTools(Reg);
+	Reg.SetCategory(TEXT("Assets"));
+	RegisterAssetTools(Reg);
 	RegisterMeshTextureTools(Reg);
 	RegisterImportTools(Reg);
+	Reg.SetCategory(TEXT("Data"));
+	RegisterDataTableTools(Reg);
+	RegisterGameplayTagTools(Reg);
+	Reg.SetCategory(TEXT("Level"));
+	RegisterSceneTools(Reg);
+	RegisterMeasureTools(Reg);
+	Reg.SetCategory(TEXT("Blueprints"));
+	RegisterBlueprintTools(Reg);
+	Reg.SetCategory(TEXT("Materials"));
+	RegisterMaterialTools(Reg);
+	Reg.SetCategory(TEXT("Play"));
+	RegisterPieTools(Reg);
 	RegisterInputTools(Reg);
+	RegisterGameRunTools(Reg);
+	Reg.SetCategory(TEXT("Multiplayer"));
+	RegisterMultiplayerTools(Reg);
+	Reg.SetCategory(TEXT("Build"));
+	RegisterBuildTools(Reg);
+	Reg.SetCategory(TEXT("Audit"));
 	RegisterValidationTools(Reg);
 	RegisterAuditTools(Reg);
-	RegisterMultiplayerTools(Reg);
-	RegisterMeasureTools(Reg);
+	Reg.SetCategory(TEXT("UI"));
 	RegisterUMGTools(Reg);
-	RegisterGameplayTagTools(Reg);
 	RegisterUIRuntimeTools(Reg);
+	Reg.SetCategory(TEXT("Localization"));
 	RegisterLocalizationTools(Reg);
-	RegisterGameRunTools(Reg);
+	Reg.SetCategory(TEXT("Images"));
 	RegisterImageTools(Reg);
-
-	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
-	if (!EnvPort.IsEmpty()) { Port = FCString::Atoi(*EnvPort); }
+	Reg.SetCategory(TEXT("Editor"));
 
 	// Per-project token; clients send it as X-Enginewright-Token or Authorization: Bearer.
 	const FString Dir = FPaths::ProjectSavedDir() / TEXT("Enginewright");
@@ -152,12 +176,43 @@ void FEnginewrightModule::StartupModule()
 		FFileHelper::SaveStringToFile(Token, *TokenFile);
 	}
 	Token = Token.TrimStartAndEnd();
+
+	if (GetDefault<UEnginewrightSettings>()->bServerEnabled)
+	{
+		StartServer();
+	}
+	else
+	{
+		Port = WantedPort();
+		EW::WriteClientConfigs(GetUrl(), Token, Dir);
+		UE_LOG(LogTemp, Display, TEXT("Enginewright: the MCP server is turned off in the settings (Tools > Enginewright, or Project Settings > Plugins > Enginewright)."));
+	}
+	SettingsChangedHandle = UEnginewrightSettings::OnChanged().AddRaw(this, &FEnginewrightModule::ApplySettings);
+	EWUI::Register();
+}
+
+uint32 FEnginewrightModule::WantedPort()
+{
+	const FString EnvPort = FPlatformMisc::GetEnvironmentVariable(TEXT("ENGINEWRIGHT_PORT"));
+	const int32 Env = EnvPort.IsEmpty() ? 0 : FCString::Atoi(*EnvPort);
+	bPortFromEnv = Env > 0;
+	return bPortFromEnv ? (uint32)Env : (uint32)FMath::Clamp(GetDefault<UEnginewrightSettings>()->Port, 1024, 65535);
+}
+
+void FEnginewrightModule::StartServer()
+{
+	if (Router.IsValid()) { return; }
+	Port = WantedPort();
+	ServerError.Reset();
+	const FString Dir = FPaths::ProjectSavedDir() / TEXT("Enginewright");
 	EW::WriteClientConfigs(GetUrl(), Token, Dir);
 
 	Router = FHttpServerModule::Get().GetHttpRouter(Port, /*bFailOnBindFailure*/ true);
 	if (!Router.IsValid())
 	{
-		UE_LOG(LogTemp, Error, TEXT("Enginewright: could not listen on port %u (set ENGINEWRIGHT_PORT to use another)."), Port);
+		bListening = false;
+		ServerError = FString::Printf(TEXT("Port %u is in use (another program or another editor). Pick another port in the Enginewright panel or set ENGINEWRIGHT_PORT."), Port);
+		UE_LOG(LogTemp, Error, TEXT("Enginewright: could not listen on port %u (pick another port in Tools > Enginewright, or set ENGINEWRIGHT_PORT)."), Port);
 		return;
 	}
 
@@ -171,19 +226,68 @@ void FEnginewrightModule::StartupModule()
 			return true;
 		})));
 	FHttpServerModule::Get().StartAllListeners();
+	bListening = true;
 	UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server on %s (%d tools). Client configs: %s"),
-		*GetUrl(), Reg.All().Num(), *FPaths::ConvertRelativePathToFull(Dir / TEXT("clients")));
+		*GetUrl(), FEWRegistry::Get().All().Num(), *FPaths::ConvertRelativePathToFull(Dir / TEXT("clients")));
 }
 
-void FEnginewrightModule::ShutdownModule()
+void FEnginewrightModule::StopServer()
 {
-	EWStopGameRuns();
 	if (Router.IsValid())
 	{
 		for (const FHttpRouteHandle& H : Routes) { Router->UnbindRoute(H); }
 	}
 	Routes.Empty();
 	Router.Reset();
+	bListening = false;
+}
+
+void FEnginewrightModule::ApplySettings()
+{
+	if (!GetDefault<UEnginewrightSettings>()->bServerEnabled)
+	{
+		if (Router.IsValid())
+		{
+			StopServer();
+			UE_LOG(LogTemp, Display, TEXT("Enginewright: MCP server turned off in the settings."));
+		}
+		ServerError.Reset();
+		return;
+	}
+	const uint32 Wanted = WantedPort();
+	if (Router.IsValid() && Wanted == Port) { return; }
+	StopServer();
+	StartServer();
+}
+
+void FEnginewrightModule::RegenerateToken()
+{
+	Token = FGuid::NewGuid().ToString(EGuidFormats::Digits) + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString Dir = FPaths::ProjectSavedDir() / TEXT("Enginewright");
+	FFileHelper::SaveStringToFile(Token, *(Dir / TEXT("token")));
+	EW::WriteClientConfigs(GetUrl(), Token, Dir);
+	Clients.Empty();
+	UE_LOG(LogTemp, Display, TEXT("Enginewright: new token. Set up your MCP clients again (Tools > Enginewright > copy a client config)."));
+}
+
+TArray<FEWClientSeen> FEnginewrightModule::GetClients(double WithinSeconds) const
+{
+	const FDateTime Since = FDateTime::Now() - FTimespan::FromSeconds(WithinSeconds);
+	TArray<FEWClientSeen> Out;
+	for (const TPair<FString, FEWClientSeen>& C : Clients)
+	{
+		if (C.Value.LastSeen >= Since) { Out.Add(C.Value); }
+	}
+	Out.Sort([](const FEWClientSeen& A, const FEWClientSeen& B) { return A.LastSeen > B.LastSeen; });
+	return Out;
+}
+
+void FEnginewrightModule::ShutdownModule()
+{
+	EWUI::Unregister();
+	UEnginewrightSettings::OnChanged().Remove(SettingsChangedHandle);
+	EWStopGameRuns();
+	StopServer();
 	EW::RemoveLogCapture();
 }
 
@@ -217,8 +321,44 @@ bool FEnginewrightModule::HandlePost(const FHttpServerRequest& Request, const FH
 	FString Method;
 	Msg->TryGetStringField(TEXT("method"), Method);
 	const bool bInit = Method == TEXT("initialize");
+
+	// Remember who is talking (for the panel and the status bar). HTTP has no connection, so a client is its MCP session.
+	FString Session;
+	if (bInit)
+	{
+		Session = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	}
+	else if (const TArray<FString>* S = Request.Headers.Find(TEXT("Mcp-Session-Id")))
+	{
+		if (S->Num()) { Session = (*S)[0]; }
+	}
+	const FString Key = Session.IsEmpty() ? FString(TEXT("(no session)")) : Session;
+	FEWClientSeen& Seen = Clients.FindOrAdd(Key);
+	const FDateTime Now = FDateTime::Now();
+	if (Seen.Requests == 0)
+	{
+		Seen.Session = Key;
+		Seen.FirstSeen = Now;
+		Seen.Name = Session.IsEmpty() ? TEXT("client without session") : TEXT("client");
+	}
+	Seen.LastSeen = Now;
+	++Seen.Requests;
+	const TSharedPtr<FJsonObject>* InitParams = nullptr;
+	const TSharedPtr<FJsonObject>* Info = nullptr;
+	if (bInit && Msg->TryGetObjectField(TEXT("params"), InitParams) && (*InitParams)->TryGetObjectField(TEXT("clientInfo"), Info))
+	{
+		(*Info)->TryGetStringField(TEXT("name"), Seen.Name);
+		(*Info)->TryGetStringField(TEXT("version"), Seen.Version);
+	}
+	if (Clients.Num() > 200)
+	{
+		// Drop sessions not seen for a day so the map stays small.
+		const FDateTime Old = Now - FTimespan::FromDays(1);
+		for (auto It = Clients.CreateIterator(); It; ++It) { if (It->Value.LastSeen < Old) { It.RemoveCurrent(); } }
+	}
+
 	FHttpResultCallback Complete = OnComplete;
-	HandleRpc(Msg, [Complete, bInit](const FString& Out)
+	HandleRpc(Msg, [Complete, bInit, Session](const FString& Out)
 	{
 		if (Out.IsEmpty())
 		{
@@ -226,7 +366,7 @@ bool FEnginewrightModule::HandlePost(const FHttpServerRequest& Request, const FH
 			return;
 		}
 		TUniquePtr<FHttpServerResponse> R = Reply(EHttpServerResponseCodes::Ok, Out);
-		if (bInit) { R->Headers.Add(TEXT("Mcp-Session-Id"), { FGuid::NewGuid().ToString(EGuidFormats::Digits) }); }
+		if (bInit) { R->Headers.Add(TEXT("Mcp-Session-Id"), { Session }); }
 		Complete(MoveTemp(R));
 	});
 	return true;
@@ -377,6 +517,8 @@ void FEnginewrightModule::CallTool(const FString& Name, const TSharedPtr<FJsonOb
 			Data->SetStringField(TEXT("name"), T->Name);
 			Data->SetStringField(TEXT("description"), T->Description);
 			Data->SetStringField(TEXT("effect"), T->bWrites ? TEXT("write") : TEXT("read"));
+			Data->SetStringField(TEXT("category"), T->Category);
+			if (FEWRegistry::IsCategoryDisabled(T->Category)) { Data->SetBoolField(TEXT("disabled"), true); }
 			Data->SetBoolField(TEXT("waits"), T->IsAsync());
 			Data->SetObjectField(TEXT("inputSchema"), T->InputSchema);
 			Finish(FEWResult::Ok(Data));

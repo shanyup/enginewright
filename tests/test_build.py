@@ -6,7 +6,7 @@ This suite restarts the editor of ENGINEWRIGHT_TEST_PROJECT, so run_all.py skips
 """
 import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ewtest import call as c, check, done, ensure_stopped, rpc, wait_server
+from ewtest import PROJ, call as c, check, done, ensure_stopped, rpc, wait_server
 
 ensure_stopped()
 
@@ -21,6 +21,29 @@ check("automation_run with no match -> NO_TESTS", not r["ok"] and r["errorCode"]
 # --- live coding (no source change: expect noChanges or success)
 r = c("live_coding_compile", timeout=900)
 check("live_coding_compile returns a result", r["ok"] and r["data"]["result"] in ("noChanges", "success"), r)
+
+# --- ER-07: after a real Live Coding patch, game_run refuses (a new game process would load the old DLL from disk).
+# Needs a C++ test project (Source/<module>/*.cpp); skipped on a Blueprint-only project. The source file is restored.
+src = next(iter(sorted((PROJ / "Source").glob("*/*.cpp"))), None) if (PROJ / "Source").is_dir() else None
+if src:
+    original = src.read_bytes()
+    try:
+        time.sleep(1.5)
+        src.write_bytes(original + b"\r\nstatic int EWLiveCodingProbe() { return 7; }\r\n")
+        r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default", "dryRun": True})
+        check("C++ edited after the last build -> warning before game_run", r["ok"] and r["data"]["checks"].get("sourceNewerThanBuild") is True
+              and any("changed after the last build" in w for w in r.get("warnings", [])), r)
+        r = c("live_coding_compile", timeout=900)
+        check("live coding patches the edited .cpp", r["ok"] and r["data"]["result"] == "success", r)
+        r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default", "timeout": 60})
+        check("game_run after a Live Coding patch -> LIVE_CODING_PATCHED, nothing started", not r["ok"] and r.get("errorCode") == "LIVE_CODING_PATCHED"
+              and "editor_restart" in r.get("message", "") and r["data"]["liveCodingPatches"] >= 1, r)
+        r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default", "allowLiveCodingPatch": True, "dryRun": True})
+        check("allowLiveCodingPatch -> runs, with a warning", r["ok"] and any("Live Coding patched" in w for w in r.get("warnings", [])), r)
+    finally:
+        src.write_bytes(original)
+else:
+    print("SKIP Live Coding / game_run check (the test project has no C++ module)")
 
 # --- restart refusals
 c("actor_spawn", {"class": "PointLight", "label": "EW_DirtyMarker"})
@@ -50,5 +73,8 @@ check("build_status: succeeded with no errors", r["ok"] and r["data"]["state"] =
 r = c("actor_find", {"label": "EW_DirtyMarker"})
 check("discarded change is gone after restart", r["ok"] and r["data"]["total"] == 0, r)
 print(f"(restart cycle took {time.time() - t0:.0f}s)")
+r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default", "dryRun": True})
+check("after the rebuild: no Live Coding patch, source not newer than the build", r["ok"] and r["data"]["checks"].get("liveCodingPatches") == 0
+      and r["data"]["checks"].get("sourceNewerThanBuild") in (False, None), r)
 
 done()

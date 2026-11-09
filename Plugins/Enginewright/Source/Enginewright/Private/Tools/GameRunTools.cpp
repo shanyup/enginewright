@@ -4,7 +4,13 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
 
+#include "Components/SkyLightComponent.h"
 #include "Containers/Ticker.h"
+#include "Editor.h"
+#include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
+#include "LevelEditorViewport.h"
+#include "Modules/ModuleManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Internationalization/Regex.h"
@@ -12,6 +18,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/Archive.h"
+#if PLATFORM_WINDOWS
+#include "ILiveCodingModule.h"
+#endif
 
 namespace
 {
@@ -84,7 +93,8 @@ namespace
 		FString Url, Exe, Out, Done, Require;
 		TArray<FString> ExeArgs, Args, Filters, PassText, FailText, ShotDirs;
 		TArray<FIntPoint> Resolutions; // empty = one run at the default size
-		bool bFullscreen = false, bUnattended = true;
+		bool bFullscreen = false, bUnattended = true, bPauseViewports = true;
+		int32 ShotsExpected = 0; // 0 = off; else the run is over when this many new PNG files exist
 		double Timeout = 600, DoneGrace = 20, RequireWithin = 120, UrlCheckTimeout = 120;
 		int32 MaxLines = 300;
 	};
@@ -116,6 +126,14 @@ namespace
 		double DoneAt = -1;
 		bool bRequireSeen = false;
 		double LastPoll = 0;
+		// shotsExpected: new PNG files seen so far and their total size at the last check (stable size = written)
+		int32 ShotsFound = 0;
+		int64 ShotsBytes = -1;
+		double LastShotCheck = 0;
+		// editor checks before the run (ER-07, ER-08); reported with the result
+		TArray<FString> Warnings;
+		TSharedPtr<FJsonObject> Checks;
+		TArray<FLevelEditorViewportClient*> PausedViewports;
 		// callers waiting for the result
 		struct FWaiter { double Deadline; FEWDone Done; };
 		TArray<FWaiter> Waiters;
@@ -244,10 +262,14 @@ namespace
 		R.CommandLineSeen.Reset();
 		R.DoneAt = -1;
 		R.bRequireSeen = false;
+		R.ShotsFound = 0;
+		R.ShotsBytes = -1;
+		R.LastShotCheck = 0;
 		return true;
 	}
 
-	TArray<TSharedPtr<FJsonValue>> CollectPngs(const FGameRun& R, const FIntPoint* Res)
+	/** Folders searched for new PNG files: the run's shots folder, the 'shots' folders, Saved/Screenshots for editor runs. */
+	TArray<FString> ShotSearchDirs(const FGameRun& R, const FIntPoint* Res)
 	{
 		TArray<FString> Dirs = { R.ShotsDir };
 		const TMap<FString, FString> Vals = PlaceholderValues(R, Res);
@@ -257,6 +279,33 @@ namespace
 			if (FillPlaceholders(D, Vals, Filled, Err)) { Dirs.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), Filled)); }
 		}
 		if (R.S.Exe.IsEmpty()) { Dirs.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Screenshots"))); }
+		return Dirs;
+	}
+
+	/** Counts the PNG files written since this run started (no copying) and their total size. */
+	int32 CountNewPngs(const FGameRun& R, const FIntPoint* Res, int64& OutBytes)
+	{
+		OutBytes = 0;
+		TSet<FString> Seen;
+		for (const FString& D : ShotSearchDirs(R, Res))
+		{
+			if (!IFileManager::Get().DirectoryExists(*D)) { continue; }
+			TArray<FString> Found;
+			IFileManager::Get().FindFilesRecursive(Found, *D, TEXT("*.png"), true, false);
+			for (const FString& F0 : Found)
+			{
+				const FString F = Fwd(FPaths::ConvertRelativePathToFull(F0));
+				if (Seen.Contains(F) || IFileManager::Get().GetTimeStamp(*F) < R.T0Utc - FTimespan::FromSeconds(1)) { continue; }
+				Seen.Add(F);
+				OutBytes += FMath::Max<int64>(0, IFileManager::Get().FileSize(*F));
+			}
+		}
+		return Seen.Num();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> CollectPngs(const FGameRun& R, const FIntPoint* Res)
+	{
+		const TArray<FString> Dirs = ShotSearchDirs(R, Res);
 		TArray<TSharedPtr<FJsonValue>> Out;
 		TSet<FString> Seen;
 		const FString ShotsPrefix = Fwd(FPaths::ConvertRelativePathToFull(R.ShotsDir)) + TEXT("/");
@@ -374,6 +423,7 @@ namespace
 		if (R.StopReason == TEXT("URL_MISMATCH") || R.StopReason == TEXT("URL_NOT_CONFIRMED") || R.StopReason == TEXT("REQUIRED_LINE_MISSING") || R.StopReason == TEXT("STOPPED")) { Verdict = R.StopReason; }
 		else if (Fails.Num()) { Verdict = TEXT("FAILED"); }
 		else if (Crash.Num()) { Verdict = TEXT("CRASHED"); }
+		else if (R.StopReason == TEXT("SHOTS_DONE") && R.Pass.Num() == 0) { Verdict = TEXT("PASSED"); } // the expected screenshots are the result
 		else if (R.Pass.Num()) { Verdict = Passes.Num() ? TEXT("PASSED") : (bTimedOut ? TEXT("TIMEOUT") : TEXT("NO_VERDICT")); }
 		else { Verdict = bTimedOut ? TEXT("TIMEOUT") : (ExitCode == 0 ? TEXT("EXITED_OK") : TEXT("EXIT_CODE")); }
 		const FIntPoint* Res = R.S.Resolutions.IsValidIndex(R.Index) ? &R.S.Resolutions[R.Index] : nullptr;
@@ -391,6 +441,12 @@ namespace
 		C->SetArrayField(TEXT("failLines"), JStrings(Fails, 50));
 		C->SetArrayField(TEXT("crashLines"), JStrings(Crash, 20));
 		C->SetArrayField(TEXT("screenshots"), CollectPngs(R, Res));
+		if (R.S.ShotsExpected > 0)
+		{
+			int64 Bytes = 0;
+			C->SetNumberField(TEXT("shotsExpected"), R.S.ShotsExpected);
+			C->SetNumberField(TEXT("shotsFound"), CountNewPngs(R, Res, Bytes));
+		}
 		if (R.Text.TrimStartAndEnd().IsEmpty()) { C->SetStringField(TEXT("warning"), TEXT("the game wrote no log; check the command (wrong exe/project?)")); }
 		R.Runs.Add(MakeShared<FJsonValueObject>(C.ToSharedRef()));
 	}
@@ -405,6 +461,7 @@ namespace
 			return Res;
 		}
 		FEWResult Res = FEWResult::Ok(R.Result);
+		Res.Warnings = R.Warnings;
 		bool bAllGood = R.Runs.Num() > 0;
 		for (const TSharedPtr<FJsonValue>& V : R.Runs)
 		{
@@ -415,6 +472,7 @@ namespace
 		{
 			Res = FEWResult::Error(TEXT("RUN_NOT_PASSED"), TEXT("At least one run did not pass; see data.verdicts and each run's failLines / crashLines / stopReason."));
 			Res.Data = R.Result;
+			Res.Warnings = R.Warnings;
 		}
 		return Res;
 	}
@@ -435,12 +493,31 @@ namespace
 		return Res;
 	}
 
+	const FText& PauseReason()
+	{
+		static const FText T = FText::FromString(TEXT("Enginewright game_run"));
+		return T;
+	}
+
+	/** Gives the level viewports paused for the run their realtime state back (only viewports that still exist). */
+	void RestoreViewports(FGameRun& R)
+	{
+		if (GEditor)
+		{
+			const TArray<FLevelEditorViewportClient*>& Live = GEditor->GetLevelViewportClients();
+			for (FLevelEditorViewportClient* V : R.PausedViewports) { if (Live.Contains(V)) { V->RemoveRealtimeOverride(PauseReason(), false); } }
+		}
+		R.PausedViewports.Reset();
+	}
+
 	void Complete(FGameRun& R)
 	{
 		R.bFinished = true;
+		RestoreViewports(R);
 		if (!R.Result.IsValid()) { R.Result = MakeShared<FJsonObject>(); }
 		R.Result->SetStringField(TEXT("id"), R.Id);
 		R.Result->SetStringField(TEXT("state"), TEXT("finished"));
+		if (R.Checks.IsValid()) { R.Result->SetObjectField(TEXT("checks"), R.Checks); }
 		R.Result->SetStringField(TEXT("out"), Fwd(R.S.Out));
 		R.Result->SetArrayField(TEXT("runs"), R.Runs);
 		TSharedRef<FJsonObject> Verdicts = MakeShared<FJsonObject>();
@@ -483,6 +560,16 @@ namespace
 		if (R.StopReason.IsEmpty() && !R.UrlOk.IsSet() && Age > R.S.UrlCheckTimeout) { R.StopReason = TEXT("URL_NOT_CONFIRMED"); }
 		if (R.StopReason.IsEmpty() && R.RequireRe.IsSet() && !R.bRequireSeen && Age > R.S.RequireWithin) { R.StopReason = TEXT("REQUIRED_LINE_MISSING"); }
 		if (R.StopReason.IsEmpty() && R.DoneAt >= 0 && !bExited && Now - R.DoneAt > R.S.DoneGrace) { R.StopReason = TEXT("DONE_BUT_NOT_EXITED"); }
+		if (R.StopReason.IsEmpty() && R.S.ShotsExpected > 0 && !bExited && Now - R.LastShotCheck >= 1.0)
+		{
+			// Enough new PNG files, and their total size did not change since the last check (the last one is written).
+			R.LastShotCheck = Now;
+			const FIntPoint* Res = R.S.Resolutions.IsValidIndex(R.Index) ? &R.S.Resolutions[R.Index] : nullptr;
+			int64 Bytes = 0;
+			R.ShotsFound = CountNewPngs(R, Res, Bytes);
+			if (R.ShotsFound >= R.S.ShotsExpected && Bytes > 0 && Bytes == R.ShotsBytes) { R.StopReason = TEXT("SHOTS_DONE"); }
+			R.ShotsBytes = R.ShotsFound >= R.S.ShotsExpected ? Bytes : -1;
+		}
 		if (!(bExited || !R.StopReason.IsEmpty() || Age > R.S.Timeout)) { return; }
 		int32 Code = -1;
 		if (bExited) { FPlatformProcess::GetProcReturnCode(R.Proc, &Code); }
@@ -521,6 +608,128 @@ namespace
 		if (!GTick.IsValid()) { GTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&Tick), 0.0f); }
 	}
 
+	/** Number of Live Coding patches applied to this editor since it started (ER-07). */
+	int32& LiveCodingPatches()
+	{
+		static int32 N = 0;
+		return N;
+	}
+
+	void WatchLiveCoding()
+	{
+#if PLATFORM_WINDOWS
+		static bool bHooked = false;
+		if (bHooked) { return; }
+		if (ILiveCodingModule* LC = FModuleManager::LoadModulePtr<ILiveCodingModule>(TEXT("LiveCoding")))
+		{
+			LC->GetOnPatchCompleteDelegate().AddLambda([]() { ++LiveCodingPatches(); });
+			bHooked = true;
+		}
+#endif
+	}
+
+	/** Newest file time in Dir (recursive) for the given wildcards; files whose name contains Skip are ignored. */
+	FDateTime Newest(const FString& Dir, const TArray<FString>& Patterns, const TCHAR* Skip, FString& Name)
+	{
+		FDateTime Best = FDateTime::MinValue();
+		if (!IFileManager::Get().DirectoryExists(*Dir)) { return Best; }
+		for (const FString& Pat : Patterns)
+		{
+			TArray<FString> Found;
+			IFileManager::Get().FindFilesRecursive(Found, *Dir, *Pat, true, false);
+			for (const FString& F : Found)
+			{
+				if (Skip && FPaths::GetCleanFilename(F).Contains(Skip)) { continue; }
+				const FDateTime T = IFileManager::Get().GetTimeStamp(*F);
+				if (T > Best) { Best = T; Name = Fwd(F); }
+			}
+		}
+		return Best;
+	}
+
+	/**
+	 * ER-07: a game started from this editor in -game mode loads the module DLLs on disk. Live Coding patches only the
+	 * running editor, and C++ edited after the last build is not in any DLL. Returns false (refuse) when Live Coding
+	 * patched the editor and the caller did not allow it; adds warnings and fills Checks either way.
+	 */
+	bool CheckCode(const FGameRun& R, bool bAllowPatched, TSharedRef<FJsonObject> Checks, TArray<FString>& Warnings, FString& RefuseMsg)
+	{
+		if (!R.S.Exe.IsEmpty()) { return true; } // a packaged exe has its own code
+		const int32 Patches = LiveCodingPatches();
+		Checks->SetNumberField(TEXT("liveCodingPatches"), Patches);
+		if (Patches > 0)
+		{
+			const FString Msg = FString::Printf(TEXT("Live Coding patched this editor %d time(s) since it started. A new game process loads the module DLLs on disk, which do not contain those changes, so the game would run the old C++ code. Rebuild first: editor_restart {\"build\": true}."), Patches);
+			if (!bAllowPatched) { RefuseMsg = Msg + TEXT(" To run the old code anyway, pass allowLiveCodingPatch: true."); return false; }
+			Warnings.Add(Msg);
+		}
+		FString SrcFile, DllFile;
+		const FDateTime Src = Newest(FPaths::GameSourceDir(), { TEXT("*.cpp"), TEXT("*.h"), TEXT("*.inl"), TEXT("*.Build.cs") }, nullptr, SrcFile);
+		const FDateTime Dll = Newest(FPaths::ProjectDir() / TEXT("Binaries") / FPlatformProcess::GetBinariesSubdirectory(), { TEXT("UnrealEditor-*.dll") }, TEXT(".patch_"), DllFile);
+		if (Src > FDateTime::MinValue() && Dll > FDateTime::MinValue())
+		{
+			const bool bStale = Src > Dll + FTimespan::FromSeconds(2);
+			Checks->SetBoolField(TEXT("sourceNewerThanBuild"), bStale);
+			if (bStale)
+			{
+				Warnings.Add(FString::Printf(TEXT("%s changed after the last build of the project's modules (%s UTC); the game runs the code that was built before. Rebuild first (editor_restart {\"build\": true}) if this change matters."),
+					*FPaths::GetCleanFilename(SrcFile), *Dll.ToString(TEXT("%Y-%m-%d %H:%M:%S"))));
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * ER-08: the editor keeps rendering its own level while the game runs. Reports how heavy the open level is and, unless
+	 * told not to, pauses the realtime level viewports for the run (restored when it ends).
+	 */
+	void CheckEditorScene(FGameRun& R, bool bApply, TSharedRef<FJsonObject> Checks, TArray<FString>& Warnings)
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World) { return; }
+		TSharedRef<FJsonObject> Scene = MakeShared<FJsonObject>();
+		int32 Actors = 0;
+		bool bCloud = false;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			++Actors;
+			if (It->GetClass()->GetName().Contains(TEXT("VolumetricCloud"))) { bCloud = true; }
+		}
+		bool bRealtimeSky = false;
+		for (TObjectIterator<USkyLightComponent> It; It; ++It)
+		{
+			if (It->GetWorld() == World && It->bRealTimeCapture && It->IsRegistered()) { bRealtimeSky = true; break; }
+		}
+		const IConsoleVariable* GI = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DynamicGlobalIlluminationMethod"));
+		const bool bLumen = GI && GI->GetInt() == 1;
+		int32 Realtime = 0;
+		for (FLevelEditorViewportClient* V : GEditor->GetLevelViewportClients()) { if (V && V->IsRealtime()) { ++Realtime; } }
+		Scene->SetStringField(TEXT("level"), World->GetOutermost()->GetName());
+		Scene->SetNumberField(TEXT("actors"), Actors);
+		Scene->SetBoolField(TEXT("lumen"), bLumen);
+		Scene->SetBoolField(TEXT("realtimeSkyLight"), bRealtimeSky);
+		Scene->SetBoolField(TEXT("volumetricClouds"), bCloud);
+		Scene->SetNumberField(TEXT("realtimeViewports"), Realtime);
+		const bool bHeavy = (bLumen && (bRealtimeSky || bCloud)) || Actors > 5000;
+		Scene->SetBoolField(TEXT("heavy"), bHeavy);
+		int32 Paused = 0;
+		if (bApply)
+		{
+			for (FLevelEditorViewportClient* V : GEditor->GetLevelViewportClients())
+			{
+				if (V && V->IsRealtime()) { V->AddRealtimeOverride(false, PauseReason()); R.PausedViewports.Add(V); ++Paused; }
+			}
+		}
+		Scene->SetNumberField(TEXT("viewportsPaused"), Paused);
+		Checks->SetObjectField(TEXT("editorScene"), Scene);
+		if (bHeavy)
+		{
+			Warnings.Add(FString::Printf(TEXT("The editor has a heavy level open (%s: %d actors%s%s%s); it shares the GPU with the game. %s If the game is still slow, open a small level in the editor first (level_open) and run again."),
+				*World->GetOutermost()->GetName(), Actors, bLumen ? TEXT(", Lumen") : TEXT(""), bRealtimeSky ? TEXT(", real-time sky light") : TEXT(""), bCloud ? TEXT(", volumetric clouds") : TEXT(""),
+				Paused > 0 ? TEXT("Its realtime viewports are paused during the run.") : (bApply ? TEXT("") : TEXT("Viewports were left running (editorViewports keep)."))));
+		}
+	}
+
 	TOptional<FIntPoint> ParseRes(const FString& S)
 	{
 		FString L, Rr;
@@ -538,6 +747,7 @@ void EWStopGameRuns()
 	{
 		FGameRun& R = *KV.Value;
 		if (R.bProcStarted) { FPlatformProcess::TerminateProc(R.Proc, true); FPlatformProcess::CloseProc(R.Proc); R.bProcStarted = false; }
+		RestoreViewports(R);
 	}
 	Runs().Empty();
 	if (GTick.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(GTick); GTick.Reset(); }
@@ -545,9 +755,11 @@ void EWStopGameRuns()
 
 void RegisterGameRunTools(FEWRegistry& Reg)
 {
+	WatchLiveCoding();
 	Reg.RegisterAsync(TEXT("game_run"),
 		TEXT("Start the game itself (UnrealEditor <project> <url> -game, or a packaged exe) once per resolution and report: did the URL arrive unchanged (checked in the game's own log), PASSED/FAILED from your patterns, the log lines you asked for, crash lines, and the new PNG files (screenshots) with their real size. ")
-		TEXT("Use it for self-tests and screenshot runs at several resolutions. The editor stays usable while the game runs. The game runs the code the editor has loaded: after C++ changes use live_coding_compile or editor_restart first. ")
+		TEXT("Use it for self-tests and screenshot runs at several resolutions. The editor stays usable while the game runs. The game loads the C++ modules built on disk, not the editor's memory: after C++ changes rebuild with editor_restart {\"build\": true}. Live Coding patches only the open editor, so game_run refuses to start after a Live Coding patch (allowLiveCodingPatch overrides). ")
+		TEXT("While the game runs, the editor's realtime level viewports are paused (editorViewports) and a heavy editor level is reported. Screenshot runs (e.g. -ExecCmds=HighResShot) end with shotsExpected: the run is PASSED when that many new PNG files are written. ")
 		TEXT("Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
 		TEXT(R"({"type":"object","properties":{
 			"url":{"type":"string","description":"Map and options passed as one argument, unchanged, e.g. /Game/Maps/Test?SelfTest=Logic?Shots={shots}?Quit=1"},
@@ -570,7 +782,10 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			"maxLines":{"type":"integer","description":"Most kept log lines per run (default 300)."},
 			"unattended":{"type":"boolean","description":"Pass -unattended (default true: no dialogs block the run)."},
 			"wait":{"type":"number","description":"Seconds to wait for the result before replying STILL_RUNNING (default 300; 0 = reply at once with the id)."},
-			"dryRun":{"type":"boolean","description":"Return the commands only; start nothing, create no folder."}}})"),
+			"shotsExpected":{"type":"integer","description":"End the run when this many new PNG files exist (searched like the screenshots in the result) and are fully written; with no pass patterns the verdict is then PASSED (stopReason SHOTS_DONE). For screenshot runs whose game does not quit, e.g. -ExecCmds=HighResShot 1 with shotsExpected 1."},
+			"editorViewports":{"type":"string","enum":["pause","keep"],"description":"pause (default): the editor's realtime level viewports stop rendering during the run and are restored after; keep: leave them."},
+			"allowLiveCodingPatch":{"type":"boolean","description":"Run even though Live Coding patched this editor (the game then runs the C++ code on disk, without the patch). Default false: refused with LIVE_CODING_PATCHED."},
+			"dryRun":{"type":"boolean","description":"Return the commands and the editor checks only; start nothing, create no folder."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
 		{
@@ -601,10 +816,18 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			S.RequireWithin = EW::Num(Args, TEXT("requireWithin"), 120);
 			S.UrlCheckTimeout = EW::Num(Args, TEXT("urlCheckTimeout"), 120);
 			S.MaxLines = (int32)EW::Num(Args, TEXT("maxLines"), 300);
-			const double Wait = EW::Num(Args, TEXT("wait"), 300);
-			if (S.Timeout <= 0 || S.DoneGrace < 0 || S.RequireWithin <= 0 || S.UrlCheckTimeout <= 0 || Wait < 0 || S.MaxLines < 0)
+			S.ShotsExpected = (int32)EW::Num(Args, TEXT("shotsExpected"), 0);
+			const FString Viewports = EW::Str(Args, TEXT("editorViewports"));
+			if (!Viewports.IsEmpty() && Viewports != TEXT("pause") && Viewports != TEXT("keep"))
 			{
-				Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout, requireWithin and urlCheckTimeout must be above 0; doneGrace, wait and maxLines 0 or more.")));
+				Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("editorViewports must be pause or keep, got '%s'."), *Viewports), { TEXT("pause"), TEXT("keep") }));
+				return;
+			}
+			S.bPauseViewports = Viewports != TEXT("keep");
+			const double Wait = EW::Num(Args, TEXT("wait"), 300);
+			if (S.Timeout <= 0 || S.DoneGrace < 0 || S.RequireWithin <= 0 || S.UrlCheckTimeout <= 0 || Wait < 0 || S.MaxLines < 0 || S.ShotsExpected < 0 || S.ShotsExpected > 1000)
+			{
+				Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout, requireWithin and urlCheckTimeout must be above 0; doneGrace, wait and maxLines 0 or more; shotsExpected 0 to 1000.")));
 				return;
 			}
 			for (const FString& T : EW::StrList(Args, TEXT("resolutions")))
@@ -638,12 +861,28 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 				Planned.Add(MakeShared<FJsonValueObject>(R->Cur.ToSharedRef()));
 			}
 			R->Index = 0;
-			if (EW::Bool(Args, TEXT("dryRun"), false))
+			const bool bDry = EW::Bool(Args, TEXT("dryRun"), false);
+			TSharedRef<FJsonObject> Checks = MakeShared<FJsonObject>();
+			FString Refuse;
+			if (!CheckCode(*R, EW::Bool(Args, TEXT("allowLiveCodingPatch"), false), Checks, R->Warnings, Refuse) && !bDry)
+			{
+				FEWResult E = FEWResult::Error(TEXT("LIVE_CODING_PATCHED"), Refuse);
+				E.Data = Checks;
+				Done(E);
+				return;
+			}
+			if (!Refuse.IsEmpty()) { R->Warnings.Add(Refuse); }
+			CheckEditorScene(*R, S.bPauseViewports && !bDry, Checks, R->Warnings);
+			R->Checks = Checks;
+			if (bDry)
 			{
 				TSharedRef<FJsonObject> D = MakeShared<FJsonObject>();
 				D->SetStringField(TEXT("out"), Fwd(S.Out));
 				D->SetArrayField(TEXT("runs"), Planned);
-				Done(FEWResult::Ok(D, TEXT("Dry run: nothing was started.")));
+				D->SetObjectField(TEXT("checks"), Checks);
+				FEWResult Ok = FEWResult::Ok(D, TEXT("Dry run: nothing was started."));
+				Ok.Warnings = R->Warnings;
+				Done(Ok);
 				return;
 			}
 			R->Started = FPlatformTime::Seconds();

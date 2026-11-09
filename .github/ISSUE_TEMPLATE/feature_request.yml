@@ -1,0 +1,115 @@
+name: Tool request
+description: Ask for a tool an agent needs but Enginewright does not have yet. Your own AI can fill this in for you (see docs/REQUEST_WITH_AI.md).
+title: "[request] "
+labels: ["request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the request. Enginewright is an early preview with one maintainer, so requests are read in order and there is no promised date.
+        Tip: paste the prompt from [docs/REQUEST_WITH_AI.md](https://github.com/shanyup/enginewright/blob/main/docs/REQUEST_WITH_AI.md) into your own AI agent while it is connected to Enginewright. It checks the existing tools with `search` / `describe` first and fills in every field below.
+  - type: textarea
+    id: story
+    attributes:
+      label: What should the agent be able to do?
+      description: The editor task as a short user story.
+      placeholder: "As a developer with a C++ UI, I want my agent to bind a widget to an MVVM view model, so that it can wire a new screen without me opening the editor."
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How is it done today?
+      description: What you do by hand in the editor now, and which Enginewright tools you tried (output of `search` with your words helps).
+      placeholder: |
+        By hand: open the widget, View Bindings panel, add a binding...
+        Tried: search "view model binding" -> no matching tool; widget_set cannot set bindings.
+    validations:
+      required: true
+  - type: input
+    id: tool_name
+    attributes:
+      label: Proposed tool name
+      description: snake_case, area first, like the existing tools (widget_add, pie_input, stringtable_set).
+      placeholder: viewmodel_bind
+    validations:
+      required: true
+  - type: textarea
+    id: input_schema
+    attributes:
+      label: Input (JSON schema)
+      description: Arguments with types and a one-line description each. Unknown arguments are always rejected, so list everything.
+      render: json
+      placeholder: |
+        {"type":"object","properties":{
+          "path":{"type":"string","description":"Widget Blueprint path"},
+          "viewModel":{"type":"string","description":"View model class"},
+          "dryRun":{"type":"boolean","description":"Only report what would change"}},
+         "required":["path","viewModel"]}
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Expected output
+      description: What the reply should contain, including what is read back after a write.
+      render: json
+      placeholder: |
+        {"ok": true, "data": {"bindings": [...], "compiled": true, "saved": true}}
+    validations:
+      required: true
+  - type: dropdown
+    id: effect
+    attributes:
+      label: Does it change the project?
+      options:
+        - Read only (changes nothing)
+        - Writes assets or the level
+        - Writes files outside Content (config, source, Saved)
+        - Runs something (Play In Editor, the game, a build)
+    validations:
+      required: true
+  - type: dropdown
+    id: undo
+    attributes:
+      label: Can the change be undone?
+      description: Enginewright writes are one editor undo step when possible.
+      options:
+        - Yes, one undo step
+        - No (creates, renames, deletes or saves assets)
+        - Not applicable (read only)
+    validations:
+      required: true
+  - type: input
+    id: ue_version
+    attributes:
+      label: Unreal Engine version
+      placeholder: "5.8"
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example in a project
+      description: A small, concrete case the tool should handle (asset paths, classes, what is in the level). A blank project case is best.
+      placeholder: "/Game/UI/WBP_Shop has a TextBlock 'Gold'; the view model VM_Shop has an int property Gold."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance test
+      description: Steps and the expected result, so the tool can be tested in tests/.
+      placeholder: |
+        1. viewmodel_bind {"path":"/Game/_EWTest/WBP_Shop","viewModel":"VM_Shop", ...} -> ok, bindings lists Gold
+        2. widget_get on Gold -> shows the binding
+        3. same call with "widgetName":"Nope" -> WIDGET_NOT_FOUND, nothing written
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Engine APIs you know of, plugins it depends on, links.
+    validations:
+      required: false

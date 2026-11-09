@@ -70,6 +70,26 @@ check("widget_render: PNG, something drawn", r["ok"] and os.path.isfile(r["data"
       and base64.b64decode(imgs[0]["data"])[:8] == b"\x89PNG\r\n\x1a\n" and r["data"]["drawnPercent"] > 0, r)
 r = c("widget_render", {"path": W, "width": 5})
 check("widget_render bad size -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+check("widget_render reports what it drew (Widget Blueprint, editor world)", r is not None and raw["structuredContent"]["data"]["source"] == "widgetBlueprint"
+      and raw["structuredContent"]["data"]["owner"] == "editorWorld", raw["structuredContent"].get("data"))
+
+# ER-06: UserWidget classes, not only Widget Blueprint assets (C++ UI built in code)
+r = c("widget_render", {"path": W + ".WBP_EWMenu_C", "width": 320, "height": 180, "inline": False})
+check("widget_render by class path (Blueprint class) -> same drawing", r["ok"] and r["data"]["source"] == "blueprintClass"
+      and r["data"]["drawnPercent"] > 0 and r["data"]["class"].endswith("WBP_EWMenu_C"), r)
+r = c("widget_render", {"path": "/Script/UMG.UserWidget", "inline": False})
+check("abstract UserWidget class -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT" and "abstract" in r["message"], r)
+r = c("widget_render", {"path": "/Script/Engine.Actor", "inline": False})
+check("a class that is not a UserWidget -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT" and "not a UserWidget" in r["message"], r)
+r = c("widget_render", {"path": "/Script/NoSuchModule.NoSuchWidget", "inline": False})
+check("unknown class -> ASSET_NOT_FOUND naming both accepted forms", not r["ok"] and r["errorCode"] == "ASSET_NOT_FOUND" and "/Script/" in r["message"], r)
+# A C++ widget that builds its tree in NativeOnInitialized: tests/fixtures/EWTestNativeWidget.* copied into the test
+# project's module (see CONTRIBUTING.md). Skipped when the test project does not have it.
+r = c("widget_render", {"path": "/Script/EnginewrightTest.EWTestNativeWidget", "width": 400, "height": 200, "inline": False})
+if r.get("errorCode") == "ASSET_NOT_FOUND":
+    print("SKIP native C++ widget render (copy tests/fixtures/EWTestNativeWidget.* into the test project)")
+else:
+    check("C++ UserWidget (tree built in code) renders -> nativeClass, drawn", r["ok"] and r["data"]["source"] == "nativeClass" and r["data"]["drawnPercent"] > 5, r)
 
 r = c("widget_remove", {"path": W, "name": "Menu"})
 check("widget_remove removes the subtree", r["ok"] and sorted(r["data"]["removed"]) == ["Menu", "PlayButton", "PlayLabel", "Title"] and list(tree()) == [root], r)

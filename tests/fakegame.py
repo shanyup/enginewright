@@ -1,7 +1,7 @@
 """A stand-in for a game, used by test_game.py (game_run) instead of a real game.
 
 Called as: python fakegame.py <url> [-ResX=W -ResY=H ...] -abslog=<file> ...
-The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|slowdone|nolog|quiet, Shots=<dir> (writes one PNG
+The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|shothang|slowdone|nolog|quiet, Shots=<dir> (writes ShotCount PNGs, default 1,
 of the requested size there), Mangle=1 (logs a command line with the URL cut at the first '=', like a broken
 batch file), Code=<n> (exit code).
 """
@@ -42,8 +42,12 @@ say("[Save] slot=Test01 written")
 if opt.get("Shots"):
     w, h = int(val("ResX") or 64), int(val("ResY") or 32)
     os.makedirs(opt["Shots"], exist_ok=True)
-    ewpng.write_png(os.path.join(opt["Shots"], f"shot_{w}x{h}.png"), w, h, bytearray(b"\x10\x80\xf0\xff" * (w * h)))
-    say(f"SELFTEST shot {w}x{h} saved")
+    for i in range(int(opt.get("ShotCount", 1))):
+        if i:
+            time.sleep(0.7)
+        name = f"shot_{w}x{h}.png" if i == 0 else f"shot_{w}x{h}_{i}.png"
+        ewpng.write_png(os.path.join(opt["Shots"], name), w, h, bytearray(b"\x10\x80\xf0\xff" * (w * h)))
+        say(f"SELFTEST shot {w}x{h} saved")
 if mode == "fail":
     say("SELFTEST Logic FAILED: expected 3 got 2")
 elif mode == "crash":
@@ -55,6 +59,9 @@ elif mode == "hang":
     time.sleep(120)
 else:
     say("SELFTEST Logic PASSED (12/12)")
+if mode == "shothang":
+    # Like a HighResShot run: the screenshots are written, then the game keeps running and never says it is done.
+    time.sleep(120)
 if mode == "passhang":
     say("SELFTEST DONE")
     time.sleep(120)

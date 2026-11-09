@@ -43,6 +43,17 @@ namespace
 
 namespace EW
 {
+	/** For the panel's copy buttons: client id, ready-to-paste text and where it goes, for the current URL and token. */
+	void ClientConfigTexts(const FString& Url, const FString& Token, TArray<FString>& OutClients, TArray<FString>& OutTexts, TArray<FString>& OutWhere)
+	{
+		for (const FClientConfig& C : BuildConfigs(Url, Token))
+		{
+			OutClients.Add(C.Client);
+			OutTexts.Add(C.Text);
+			OutWhere.Add(C.Where);
+		}
+	}
+
 	void WriteClientConfigs(const FString& Url, const FString& Token, const FString& Dir)
 	{
 		const TArray<FClientConfig> Configs = BuildConfigs(Url, Token);
