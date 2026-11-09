@@ -1,0 +1,91 @@
+name: Bug report
+description: A tool gave a wrong result, an unclear error, or broke the editor.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste your project token (`Saved/Enginewright/token`) or client config files.
+  - type: input
+    id: ue_version
+    attributes:
+      label: Unreal Engine version
+      placeholder: "5.8"
+    validations:
+      required: true
+  - type: input
+    id: ew_version
+    attributes:
+      label: Enginewright version and how you installed it
+      placeholder: "v0.3.1, prebuilt zip"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows (Win64)
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      placeholder: "Claude Code, Codex, Cursor, VS Code, Hermes, ..."
+    validations:
+      required: false
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor output
+      description: Ask your agent to call `doctor` and paste the reply.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: call
+    attributes:
+      label: Tool name and arguments
+      description: The exact call that went wrong.
+      render: json
+      placeholder: |
+        widget_render {"path": "/Game/UI/WBP_Menu", "width": 1280, "height": 720}
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: The full reply (ok, errorCode, message, data), and what you saw in the editor.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Best on a new, blank project. List the assets or level content the call needs.
+      placeholder: |
+        1. New blank UE 5.8 project, plugin from the v0.3.1 zip
+        2. widget_create {"path": "/Game/UI/WBP_Menu"}
+        3. widget_render {"path": "/Game/UI/WBP_Menu"} -> ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Relevant lines from the Output Log or `<Project>/Saved/Logs/<Project>.log` (lines with Enginewright, errors, crash).
+      render: text
+    validations:
+      required: false
