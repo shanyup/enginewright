@@ -13,10 +13,12 @@
 #include "Modules/ModuleManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Internationalization/Internationalization.h"
 #include "Internationalization/Regex.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Internationalization/Culture.h"
 #include "Serialization/Archive.h"
 #if PLATFORM_WINDOWS
 #include "ILiveCodingModule.h"
@@ -90,7 +92,7 @@ namespace
 
 	struct FRunSpec
 	{
-		FString Url, Exe, Out, Done, Require;
+		FString Url, Exe, Out, Done, Require, Culture;
 		TArray<FString> ExeArgs, Args, Filters, PassText, FailText, ShotDirs;
 		TArray<FIntPoint> Resolutions; // empty = one run at the default size
 		bool bFullscreen = false, bUnattended = true, bPauseViewports = true;
@@ -223,6 +225,7 @@ namespace
 		R.Command.Add(TEXT("-log"));
 		R.Command.Add(TEXT("-nosplash"));
 		if (R.S.bUnattended) { R.Command.Add(TEXT("-unattended")); }
+		if (!R.S.Culture.IsEmpty()) { R.Command.Add(TEXT("-culture=") + R.S.Culture); } // ER-12: the game is a separate process, loc_culture does not reach it
 		for (const FString& A : R.S.Args)
 		{
 			FString Filled;
@@ -234,6 +237,7 @@ namespace
 		R.Cur->SetArrayField(TEXT("command"), JStrings(R.Command, MAX_int32, 4000));
 		R.Cur->SetStringField(TEXT("log"), Fwd(R.Log));
 		R.Cur->SetStringField(TEXT("url"), R.UrlFilled);
+		if (!R.S.Culture.IsEmpty()) { R.Cur->SetStringField(TEXT("culture"), R.S.Culture); }
 		return true;
 	}
 
@@ -760,7 +764,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 		TEXT("Start the game itself (UnrealEditor <project> <url> -game, or a packaged exe) once per resolution and report: did the URL arrive unchanged (checked in the game's own log), PASSED/FAILED from your patterns, the log lines you asked for, crash lines, and the new PNG files (screenshots) with their real size. ")
 		TEXT("Use it for self-tests and screenshot runs at several resolutions. The editor stays usable while the game runs. The game loads the C++ modules built on disk, not the editor's memory: after C++ changes rebuild with editor_restart {\"build\": true}. Live Coding patches only the open editor, so game_run refuses to start after a Live Coding patch (allowLiveCodingPatch overrides). ")
 		TEXT("While the game runs, the editor's realtime level viewports are paused (editorViewports) and a heavy editor level is reported. Screenshot runs (e.g. -ExecCmds=HighResShot) end with shotsExpected: the run is PASSED when that many new PNG files are written. ")
-		TEXT("Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
+		TEXT("The game is a separate process: loc_culture changes only the editor's language and does not reach it. Pass culture (e.g. tr) to start the game with -culture=tr. Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
 		TEXT(R"({"type":"object","properties":{
 			"url":{"type":"string","description":"Map and options passed as one argument, unchanged, e.g. /Game/Maps/Test?SelfTest=Logic?Shots={shots}?Quit=1"},
 			"resolutions":{"type":"array","description":"Resolutions as \"WxH\" strings, one run each in order (e.g. [\"1920x1080\",\"1280x720\"]). Default: one run at the game's own size."},
@@ -783,6 +787,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			"unattended":{"type":"boolean","description":"Pass -unattended (default true: no dialogs block the run)."},
 			"wait":{"type":"number","description":"Seconds to wait for the result before replying STILL_RUNNING (default 300; 0 = reply at once with the id)."},
 			"shotsExpected":{"type":"integer","description":"End the run when this many new PNG files exist (searched like the screenshots in the result) and are fully written; with no pass patterns the verdict is then PASSED (stopReason SHOTS_DONE). For screenshot runs whose game does not quit, e.g. -ExecCmds=HighResShot 1 with shotsExpected 1."},
+			"culture":{"type":"string","description":"Culture the game starts with, e.g. tr or de-DE: adds -culture=<value> to the game arguments. loc_culture does not change the game process, only the editor."},
 			"editorViewports":{"type":"string","enum":["pause","keep"],"description":"pause (default): the editor's realtime level viewports stop rendering during the run and are restored after; keep: leave them."},
 			"allowLiveCodingPatch":{"type":"boolean","description":"Run even though Live Coding patched this editor (the game then runs the C++ code on disk, without the patch). Default false: refused with LIVE_CODING_PATCHED."},
 			"dryRun":{"type":"boolean","description":"Return the commands and the editor checks only; start nothing, create no folder."}}})"),
@@ -811,6 +816,22 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			S.Require = EW::Str(Args, TEXT("require"));
 			S.bFullscreen = EW::Bool(Args, TEXT("fullscreen"), false);
 			S.bUnattended = EW::Bool(Args, TEXT("unattended"), true);
+			S.Culture = EW::Str(Args, TEXT("culture")).TrimStartAndEnd();
+			if (Args->HasField(TEXT("culture")))
+			{
+				if (S.Culture.IsEmpty()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("culture is empty; pass a culture name such as tr or de-DE, or leave it out."))); return; }
+				if (!FInternationalization::Get().GetCulture(S.Culture).IsValid())
+				{
+					TArray<FString> All;
+					FInternationalization::Get().GetCultureNames(All);
+					Done(FEWResult::Error(TEXT("UNKNOWN_CULTURE"), FString::Printf(TEXT("'%s' is not a known culture name."), *S.Culture), EW::Suggest(S.Culture, All)));
+					return;
+				}
+				for (const FString& A : EW::StrList(Args, TEXT("args")))
+				{
+					if (A.StartsWith(TEXT("-culture="), ESearchCase::IgnoreCase)) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("args already contains -culture=; use only one of culture and that argument."))); return; }
+				}
+			}
 			S.Timeout = EW::Num(Args, TEXT("timeout"), 600);
 			S.DoneGrace = EW::Num(Args, TEXT("doneGrace"), 20);
 			S.RequireWithin = EW::Num(Args, TEXT("requireWithin"), 120);

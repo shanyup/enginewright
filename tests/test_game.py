@@ -158,6 +158,26 @@ d = meta("describe", {"name": "game_run"})
 check("game_run description: rebuild after C++ changes, Live Coding is not enough", d["ok"] and "editor_restart" in d["data"]["description"]
       and "Live Coding patches only" in d["data"]["description"], d)
 
+# ER-12: culture for the game process (loc_culture only changes the editor)
+r = fake("/Game/Maps/Test?Mode=pass", culture="tr", **{"pass": ["PASSED"]})
+check("culture tr -> -culture=tr reaches the game (checked in its own command line)", r["ok"] and "-culture=tr" in run0(r).get("commandLineSeen", "")
+      and "-culture=tr" in run0(r).get("command", []) and run0(r).get("culture") == "tr", run0(r))
+r = fake("/Game/Maps/Test?Mode=pass", **{"pass": ["PASSED"]})
+check("no culture -> no -culture argument", r["ok"] and "-culture" not in run0(r).get("commandLineSeen", ""), run0(r))
+r = c("game_run", {"url": "/X", "culture": "zz-Nowhere", "dryRun": True})
+check("unknown culture -> UNKNOWN_CULTURE", r.get("errorCode") == "UNKNOWN_CULTURE", r)
+r = c("game_run", {"url": "/X", "culture": " ", "dryRun": True})
+check("empty culture -> INVALID_ARGUMENT", r.get("errorCode") == "INVALID_ARGUMENT", r)
+r = c("game_run", {"url": "/X", "culture": "tr", "args": ["-culture=de"], "dryRun": True})
+check("culture together with -culture= in args -> INVALID_ARGUMENT", r.get("errorCode") == "INVALID_ARGUMENT", r)
+r = c("game_run", {"url": "/X", "culture": "de-DE", "dryRun": True})
+check("dryRun shows -culture=de-DE in the command", r["ok"] and "-culture=de-DE" in run0(r).get("command", []), r)
+d = meta("describe", {"name": "game_run"})
+check("game_run description + schema: culture, and that loc_culture does not reach the game", d["ok"] and "culture" in d["data"]["inputSchema"]["properties"]
+      and "loc_culture" in d["data"]["description"], d)
+d = meta("describe", {"name": "loc_culture"})
+check("loc_culture description says it does not reach game_run", d["ok"] and "game_run" in d["data"]["description"], d)
+
 # background: reply at once, follow with game_run_status
 r = fake("/Game/Maps/Test?Mode=pass", wait=0, **{"pass": ["PASSED"]})
 rid = (r.get("data") or {}).get("id")

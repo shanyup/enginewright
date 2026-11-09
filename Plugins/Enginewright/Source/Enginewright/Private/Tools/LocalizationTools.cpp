@@ -13,6 +13,10 @@
 #include "Internationalization/StringTableCore.h"
 #include "Internationalization/StringTableRegistry.h"
 #include "Internationalization/TextLocalizationManager.h"
+#include "Internationalization/TextLocalizationResource.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 
@@ -74,6 +78,133 @@ namespace
 		J->SetStringField(TEXT("source"), Source);
 		if (!ExtraName.IsEmpty()) { J->SetStringField(ExtraName, Extra); }
 		return J;
+	}
+
+	/** A translated entry from a String Table, a .po file or a .locres file. */
+	struct FTransEntry
+	{
+		FString Str, PoSource;
+		bool bHasPoSource = false, bFuzzy = false, bHasHash = false;
+		uint32 Hash = 0;
+	};
+
+	/** One entry of a .po file (msgctxt "Namespace,Key", msgid = source text, msgstr = translation). */
+	struct FPoItem { FString Ctxt, Id, Str, CommentKey; bool bFuzzy = false; };
+
+	/** Text between the first and the last quote of a po string line, with \n \t \r \" \\ unescaped. */
+	FString UnquotePo(const FString& In)
+	{
+		const int32 A = In.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart);
+		const int32 B = In.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+		if (A == INDEX_NONE || B <= A) { return FString(); }
+		const FString Body = In.Mid(A + 1, B - A - 1);
+		FString Out;
+		Out.Reserve(Body.Len());
+		for (int32 i = 0; i < Body.Len(); ++i)
+		{
+			if (Body[i] == TEXT('\\') && i + 1 < Body.Len())
+			{
+				const TCHAR N = Body[++i];
+				Out.AppendChar(N == TEXT('n') ? TEXT('\n') : N == TEXT('t') ? TEXT('\t') : N == TEXT('r') ? TEXT('\r') : N);
+			}
+			else { Out.AppendChar(Body[i]); }
+		}
+		return Out;
+	}
+
+	void ParsePo(const FString& Text, TArray<FPoItem>& Out)
+	{
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines, false);
+		FPoItem E;
+		bool bHave = false;
+		int32 Cur = 0; // 1 msgctxt, 2 msgid, 3 msgstr
+		auto Flush = [&]() { if (bHave) { Out.Add(E); } E = FPoItem(); bHave = false; Cur = 0; };
+		for (FString L : Lines)
+		{
+			L.TrimStartAndEndInline();
+			if (L.IsEmpty()) { Flush(); continue; }
+			if (L.StartsWith(TEXT("#~"))) { continue; } // obsolete entry
+			if (L.StartsWith(TEXT("#")))
+			{
+				if (Cur == 3) { Flush(); }
+				if (L.StartsWith(TEXT("#,")) && L.Contains(TEXT("fuzzy"))) { E.bFuzzy = true; }
+				if (L.StartsWith(TEXT("#.")))
+				{
+					FString After;
+					if (L.Split(TEXT("Key:"), nullptr, &After)) { E.CommentKey = After.TrimStartAndEnd(); }
+				}
+				continue;
+			}
+			if (L.StartsWith(TEXT("msgctxt"))) { if (Cur == 3) { Flush(); } Cur = 1; bHave = true; E.Ctxt = UnquotePo(L); }
+			else if (L.StartsWith(TEXT("msgid_plural")) || L.StartsWith(TEXT("msgstr["))) { Cur = 0; }
+			else if (L.StartsWith(TEXT("msgid"))) { if (Cur == 3) { Flush(); } Cur = 2; bHave = true; E.Id = UnquotePo(L); }
+			else if (L.StartsWith(TEXT("msgstr"))) { Cur = 3; E.Str = UnquotePo(L); }
+			else if (L.StartsWith(TEXT("\"")))
+			{
+				if (Cur == 1) { E.Ctxt += UnquotePo(L); } else if (Cur == 2) { E.Id += UnquotePo(L); } else if (Cur == 3) { E.Str += UnquotePo(L); }
+			}
+		}
+		Flush();
+	}
+
+	/** Namespace and key of a po entry: UE writes msgctxt "Namespace,Key" and a "#. Key:" comment. */
+	void SplitContext(const FPoItem& It, FString& Ns, FString& Key)
+	{
+		if (!It.CommentKey.IsEmpty())
+		{
+			Key = It.CommentKey;
+			Ns = It.Ctxt;
+			if (Ns.EndsWith(TEXT(",") + Key)) { Ns.LeftChopInline(Key.Len() + 1); } else if (Ns == Key) { Ns.Empty(); }
+			return;
+		}
+		int32 Comma;
+		if (It.Ctxt.FindChar(TEXT(','), Comma)) { Ns = It.Ctxt.Left(Comma); Key = It.Ctxt.Mid(Comma + 1); }
+		else { Ns.Empty(); Key = It.Ctxt; }
+	}
+
+	/**
+	 * The engine's .locres reader loops for ever on a file that is not a .locres (it trusts the counts in it), which would
+	 * freeze the editor. So check the file first: the new formats start with a fixed GUID; the legacy format is walked
+	 * here with every length checked against the file size.
+	 */
+	bool LocresLooksValid(const TArray<uint8>& B)
+	{
+		static const uint8 Magic[16] = { 0x0E, 0x14, 0x74, 0x75, 0x67, 0x4A, 0x03, 0xFC, 0x4A, 0x15, 0x90, 0x9D, 0xC3, 0x37, 0x7F, 0x1B };
+		if (B.Num() >= 17 && FMemory::Memcmp(B.GetData(), Magic, 16) == 0) { return true; }
+		int64 Pos = 0;
+		const int64 N = B.Num();
+		auto U32 = [&](uint32& V) { if (Pos + 4 > N) { return false; } FMemory::Memcpy(&V, B.GetData() + Pos, 4); Pos += 4; return true; };
+		auto Str = [&]() -> bool
+		{
+			uint32 Raw;
+			if (!U32(Raw)) { return false; }
+			const int32 Len = (int32)Raw;
+			if (Len == INT32_MIN) { return false; }
+			const int64 Bytes = Len >= 0 ? (int64)Len : (int64)(-Len) * 2;
+			if (Pos + Bytes > N) { return false; }
+			Pos += Bytes;
+			return true;
+		};
+		uint32 Namespaces;
+		if (!U32(Namespaces) || Namespaces > (uint32)N) { return false; }
+		for (uint32 i = 0; i < Namespaces; ++i)
+		{
+			uint32 Keys;
+			if (!Str() || !U32(Keys) || Keys > (uint32)N) { return false; }
+			for (uint32 k = 0; k < Keys; ++k)
+			{
+				uint32 Hash;
+				if (!Str() || !U32(Hash) || !Str()) { return false; }
+			}
+		}
+		return Pos == N;
+	}
+
+	/** Absolute path of a file argument; relative paths start at the project folder. */
+	FString ResolveFile(const FString& P)
+	{
+		return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), P);
 	}
 }
 
@@ -253,54 +384,159 @@ void RegisterLocalizationTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("stringtable_compare"),
-		TEXT("Compare a source String Table with a translation table (registry ids or asset paths), read-only: keys missing from the translation, extra keys, empty translations, translations identical to the source (likely untranslated), and format arguments {x} or rich text tags <x> that differ between source and translation."),
+		TEXT("Compare a source with a translation, read-only: keys missing from the translation, extra keys, empty translations, translations identical to the source (likely untranslated), and format arguments {x} or rich text tags <x> that differ between source and translation. ")
+		TEXT("Source: a String Table (registry id or asset path) or a CSV file (sourceCsv, Key,SourceString columns like LOCTABLE_FROMFILE). Translation: a second String Table, or a translated file: po (Game.po of the localization dashboard, entries matched by namespace + key) or locres (compiled Game.locres). ")
+		TEXT("A po or locres input also reports translations made for an older source text (sourceChanged) and, for po, entries marked fuzzy. Pass exactly one source and one translation. Relative file paths start at the project folder."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string","description":"Source String Table (path or asset name)."},"translation":{"type":"string","description":"Translated String Table to check against the source."},
+			"source":{"type":"string","description":"Source String Table (path or asset name)."},
+			"sourceCsv":{"type":"string","description":"Source from a CSV file (Key,SourceString[,Comment]) instead of a String Table."},
+			"translation":{"type":"string","description":"Translated String Table to check against the source."},
+			"po":{"type":"string","description":"Translated .po file (e.g. Content/Localization/Game/tr/Game.po)."},
+			"locres":{"type":"string","description":"Compiled .locres file (e.g. Content/Localization/Game/tr/Game.locres)."},
+			"namespace":{"type":"string","description":"Namespace of the entries in the po/locres file. Default: the namespace of the source String Table. '*' = any namespace."},
 			"ignoreSame":{"type":"array","items":{"type":"string"},"description":"Key wildcards allowed to equal the source (names, numbers)."},
-			"limit":{"type":"integer","description":"Max listed per category, default 100."}},
-			"required":["source","translation"]})"),
+			"limit":{"type":"integer","description":"Max listed per category, default 100."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
-			FName SId, TId; FString Err; TArray<FString> Sug;
-			FStringTableConstPtr S = FindTable(EW::Str(Args, TEXT("source")), SId, Err, Sug);
-			if (!S.IsValid()) { return Bad(TEXT("TABLE_NOT_FOUND"), TEXT("source: ") + Err, Sug); }
-			FStringTableConstPtr T = FindTable(EW::Str(Args, TEXT("translation")), TId, Err, Sug);
-			if (!T.IsValid()) { return Bad(TEXT("TABLE_NOT_FOUND"), TEXT("translation: ") + Err, Sug); }
-			if (SId == TId) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("source and translation are the same table.")); }
+			const FString SourceArg = EW::Str(Args, TEXT("source")), CsvArg = EW::Str(Args, TEXT("sourceCsv"));
+			const FString TransArg = EW::Str(Args, TEXT("translation")), PoArg = EW::Str(Args, TEXT("po")), LocresArg = EW::Str(Args, TEXT("locres"));
+			if (SourceArg.IsEmpty() == CsvArg.IsEmpty()) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("Pass exactly one of source (a String Table) and sourceCsv (a CSV file).")); }
+			if ((int32)!TransArg.IsEmpty() + (int32)!PoArg.IsEmpty() + (int32)!LocresArg.IsEmpty() != 1) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("Pass exactly one of translation (a String Table), po and locres.")); }
+			if (!PoArg.IsEmpty() && !PoArg.EndsWith(TEXT(".po"), ESearchCase::IgnoreCase)) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("po must be a .po file.")); }
+			if (!LocresArg.IsEmpty() && !LocresArg.EndsWith(TEXT(".locres"), ESearchCase::IgnoreCase)) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("locres must be a .locres file.")); }
 			const TArray<FString> IgnoreSame = EW::StrList(Args, TEXT("ignoreSame"));
 			const int32 Limit = FMath::Clamp((int32)EW::Num(Args, TEXT("limit"), 100), 1, 5000);
 
-			TMap<FString, FString> Src, Tr;
+			// Source: key -> source string, in file / table order.
+			FString Err, SourceName, SrcNamespace;
+			FName SId, TId;
+			TArray<FString> Sug;
+			TMap<FString, FString> Src;
 			TArray<FString> SrcOrder;
-			S->EnumerateSourceStrings([&](const FString& K, const FString& V) { Src.Add(K, V); SrcOrder.Add(K); return true; });
-			T->EnumerateSourceStrings([&](const FString& K, const FString& V) { Tr.Add(K, V); return true; });
+			if (!SourceArg.IsEmpty())
+			{
+				FStringTableConstPtr S = FindTable(SourceArg, SId, Err, Sug);
+				if (!S.IsValid()) { return Bad(TEXT("TABLE_NOT_FOUND"), TEXT("source: ") + Err, Sug); }
+				S->EnumerateSourceStrings([&](const FString& K, const FString& V) { Src.Add(K, V); SrcOrder.Add(K); return true; });
+				SourceName = SId.ToString();
+				SrcNamespace = S->GetNamespace();
+			}
+			else
+			{
+				FString Text;
+				const FString Path = ResolveFile(CsvArg);
+				if (!FFileHelper::LoadFileToString(Text, *Path)) { return Bad(TEXT("FILE_NOT_FOUND"), FString::Printf(TEXT("sourceCsv: cannot read '%s'."), *Path)); }
+				FStringTableRef Csv = FStringTable::NewStringTable();
+				if (!Csv->ImportStringsFromCSVString(Text, *Path)) { return Bad(TEXT("INVALID_FILE"), FString::Printf(TEXT("sourceCsv: '%s' is not a String Table CSV (needs Key and SourceString columns)."), *Path)); }
+				Csv->EnumerateSourceStrings([&](const FString& K, const FString& V) { Src.Add(K, V); SrcOrder.Add(K); return true; });
+				SourceName = Path;
+			}
 
-			TArray<TSharedPtr<FJsonValue>> Missing, Extra, Empty, Same, Format;
-			int32 NMissing = 0, NExtra = 0, NEmpty = 0, NSame = 0, NFormat = 0;
+			// Translation: key -> entry.
+			TMap<FString, FTransEntry> Tr;
+			FString TransName, Kind;
+			TArray<FString> Notes;
+			if (!TransArg.IsEmpty())
+			{
+				FStringTableConstPtr T = FindTable(TransArg, TId, Err, Sug);
+				if (!T.IsValid()) { return Bad(TEXT("TABLE_NOT_FOUND"), TEXT("translation: ") + Err, Sug); }
+				if (!SourceArg.IsEmpty() && SId == TId) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("source and translation are the same table.")); }
+				T->EnumerateSourceStrings([&](const FString& K, const FString& V) { FTransEntry E; E.Str = V; Tr.Add(K, E); return true; });
+				TransName = TId.ToString();
+				Kind = TEXT("table");
+			}
+			else
+			{
+				const FString Path = ResolveFile(PoArg.IsEmpty() ? LocresArg : PoArg);
+				if (!IFileManager::Get().FileExists(*Path)) { return Bad(TEXT("FILE_NOT_FOUND"), FString::Printf(TEXT("'%s' does not exist."), *Path)); }
+				const FString NsArg = Args->HasField(TEXT("namespace")) ? EW::Str(Args, TEXT("namespace")) : SrcNamespace;
+				const bool bAnyNs = NsArg == TEXT("*");
+				TMap<FString, FTransEntry> Any;      // every namespace, first entry of a key wins
+				TMap<FString, FTransEntry> InNs;     // only NsArg
+				int32 NoContext = 0, Total = 0;
+				if (!PoArg.IsEmpty())
+				{
+					FString Text;
+					if (!FFileHelper::LoadFileToString(Text, *Path)) { return Bad(TEXT("FILE_NOT_FOUND"), FString::Printf(TEXT("cannot read '%s'."), *Path)); }
+					TArray<FPoItem> Items;
+					ParsePo(Text, Items);
+					for (const FPoItem& It : Items)
+					{
+						if (It.Ctxt.IsEmpty() && It.Id.IsEmpty()) { continue; } // header
+						FString Ns, Key;
+						SplitContext(It, Ns, Key);
+						if (Key.IsEmpty()) { ++NoContext; continue; }
+						++Total;
+						FTransEntry E; E.Str = It.Str; E.PoSource = It.Id; E.bHasPoSource = true; E.bFuzzy = It.bFuzzy;
+						if (!Any.Contains(Key)) { Any.Add(Key, E); }
+						if (Ns == NsArg && !InNs.Contains(Key)) { InNs.Add(Key, E); }
+					}
+					Kind = TEXT("po");
+				}
+				else
+				{
+					TArray<uint8> Bytes;
+					if (!FFileHelper::LoadFileToArray(Bytes, *Path)) { return Bad(TEXT("FILE_NOT_FOUND"), FString::Printf(TEXT("cannot read '%s'."), *Path)); }
+					if (!LocresLooksValid(Bytes)) { return Bad(TEXT("INVALID_FILE"), FString::Printf(TEXT("'%s' is not a readable .locres file."), *Path)); }
+					FTextLocalizationResource Res;
+					if (!Res.LoadFromFile(Path, 0)) { return Bad(TEXT("INVALID_FILE"), FString::Printf(TEXT("'%s' is not a readable .locres file."), *Path)); }
+					for (const TPair<FTextId, FTextLocalizationResource::FEntry>& KV : Res.Entries)
+					{
+						++Total;
+						const FString Key = KV.Key.GetKey().ToString(), Ns = KV.Key.GetNamespace().ToString();
+						FTransEntry E; E.Str = KV.Value.LocalizedString.IsValid() ? *KV.Value.LocalizedString : FString(); E.bHasHash = true; E.Hash = KV.Value.SourceStringHash;
+						if (!Any.Contains(Key)) { Any.Add(Key, E); }
+						if (Ns == NsArg && !InNs.Contains(Key)) { InNs.Add(Key, E); }
+					}
+					Kind = TEXT("locres");
+				}
+				if (Total == 0) { return Bad(TEXT("INVALID_FILE"), FString::Printf(TEXT("'%s' has no translated entries."), *Path)); }
+				if (bAnyNs || (InNs.Num() == 0 && NsArg.IsEmpty())) { Tr = Any; }
+				else if (InNs.Num() == 0)
+				{
+					Tr = Any;
+					Notes.Add(FString::Printf(TEXT("No entry in namespace '%s' in %s; keys were matched in any namespace. Pass namespace to choose one."), *NsArg, *FPaths::GetCleanFilename(Path)));
+				}
+				else { Tr = InNs; }
+				if (NoContext) { Notes.Add(FString::Printf(TEXT("%d po entries have no msgctxt/Key and were skipped."), NoContext)); }
+				TransName = Path;
+			}
+
+			TArray<TSharedPtr<FJsonValue>> Missing, Extra, Empty, Same, Format, Changed, Fuzzy;
+			int32 NMissing = 0, NExtra = 0, NEmpty = 0, NSame = 0, NFormat = 0, NChanged = 0, NFuzzy = 0;
 			auto Add = [Limit](TArray<TSharedPtr<FJsonValue>>& L, int32& N, TSharedRef<FJsonObject> J) { ++N; if (L.Num() < Limit) { L.Add(MakeShared<FJsonValueObject>(J)); } };
 			for (const FString& K : SrcOrder)
 			{
 				const FString& V = Src[K];
-				const FString* TV = Tr.Find(K);
-				if (!TV) { Add(Missing, NMissing, Entry(K, V)); continue; }
-				if (TV->TrimStartAndEnd().IsEmpty() && !V.TrimStartAndEnd().IsEmpty()) { Add(Empty, NEmpty, Entry(K, V)); continue; }
+				const FTransEntry* TE = Tr.Find(K);
+				if (!TE) { Add(Missing, NMissing, Entry(K, V)); continue; }
+				const FString& TV = TE->Str;
+				if (TE->bFuzzy) { Add(Fuzzy, NFuzzy, Entry(K, V, TV, TEXT("translation"))); }
+				if (TV.TrimStartAndEnd().IsEmpty() && !V.TrimStartAndEnd().IsEmpty()) { Add(Empty, NEmpty, Entry(K, V)); continue; }
 				const bool bIgnored = IgnoreSame.ContainsByPredicate([&K](const FString& W) { return K.MatchesWildcard(W); });
-				if (*TV == V && !bIgnored && V.Len() > 1 && !V.IsNumeric()) { Add(Same, NSame, Entry(K, V)); }
-				const TArray<FString> A = Tokens(V), B = Tokens(*TV);
+				if (TV == V && !bIgnored && V.Len() > 1 && !V.IsNumeric()) { Add(Same, NSame, Entry(K, V)); }
+				if ((TE->bHasPoSource && TE->PoSource != V) || (TE->bHasHash && TE->Hash != FTextLocalizationResource::HashString(V)))
+				{
+					TSharedRef<FJsonObject> J = Entry(K, V, TV, TEXT("translation"));
+					if (TE->bHasPoSource) { J->SetStringField(TEXT("translatedFrom"), TE->PoSource); }
+					Add(Changed, NChanged, J);
+				}
+				const TArray<FString> A = Tokens(V), B = Tokens(TV);
 				if (A != B)
 				{
-					TSharedRef<FJsonObject> J = Entry(K, V, *TV, TEXT("translation"));
+					TSharedRef<FJsonObject> J = Entry(K, V, TV, TEXT("translation"));
 					J->SetStringField(TEXT("sourceTokens"), FString::Join(A, TEXT(" ")));
 					J->SetStringField(TEXT("translationTokens"), FString::Join(B, TEXT(" ")));
 					Add(Format, NFormat, J);
 				}
 			}
-			for (const TPair<FString, FString>& KV : Tr) { if (!Src.Contains(FString(*KV.Key))) { Add(Extra, NExtra, Entry(FString(*KV.Key), KV.Value)); } }
+			for (const TPair<FString, FTransEntry>& KV : Tr) { if (!Src.Contains(FString(*KV.Key))) { Add(Extra, NExtra, Entry(FString(*KV.Key), KV.Value.Str)); } }
 
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
-			Data->SetStringField(TEXT("source"), SId.ToString());
-			Data->SetStringField(TEXT("translation"), TId.ToString());
+			Data->SetStringField(TEXT("source"), SourceName);
+			Data->SetStringField(TEXT("translation"), TransName);
+			Data->SetStringField(TEXT("translationKind"), Kind);
 			Data->SetNumberField(TEXT("sourceEntries"), Src.Num());
 			Data->SetNumberField(TEXT("translationEntries"), Tr.Num());
 			TSharedRef<FJsonObject> Counts = MakeShared<FJsonObject>();
@@ -309,18 +545,24 @@ void RegisterLocalizationTools(FEWRegistry& R)
 			Counts->SetNumberField(TEXT("empty"), NEmpty);
 			Counts->SetNumberField(TEXT("sameAsSource"), NSame);
 			Counts->SetNumberField(TEXT("formatMismatch"), NFormat);
+			Counts->SetNumberField(TEXT("sourceChanged"), NChanged);
+			Counts->SetNumberField(TEXT("fuzzy"), NFuzzy);
 			Data->SetObjectField(TEXT("counts"), Counts);
 			Data->SetArrayField(TEXT("missing"), Missing);
 			Data->SetArrayField(TEXT("extra"), Extra);
 			Data->SetArrayField(TEXT("empty"), Empty);
 			Data->SetArrayField(TEXT("sameAsSource"), Same);
 			Data->SetArrayField(TEXT("formatMismatch"), Format);
-			Data->SetBoolField(TEXT("clean"), NMissing + NExtra + NEmpty + NFormat == 0);
-			return FEWResult::Ok(Data);
+			Data->SetArrayField(TEXT("sourceChanged"), Changed);
+			Data->SetArrayField(TEXT("fuzzy"), Fuzzy);
+			Data->SetBoolField(TEXT("clean"), NMissing + NExtra + NEmpty + NFormat + NChanged + NFuzzy == 0);
+			FEWResult Res = FEWResult::Ok(Data);
+			Res.Warnings = Notes;
+			return Res;
 		});
 
 	R.Register(TEXT("loc_culture"),
-		TEXT("Read or switch the editor's current language (and culture), e.g. to preview translated text in Play In Editor or in a screenshot. Lists the cultures that have game localization data. Switching changes text everywhere in the editor until switched back."),
+		TEXT("Read or switch the editor's current language (and culture), e.g. to preview translated text in Play In Editor or in a screenshot. Lists the cultures that have game localization data. Switching changes text everywhere in the editor until switched back. It does not reach a game started by game_run (a separate process): give game_run its own culture argument."),
 		TEXT(R"({"type":"object","properties":{
 			"language":{"type":"string","description":"Culture name to switch to, e.g. tr, en, de-DE. Omit to only read."}}})"),
 		false,
