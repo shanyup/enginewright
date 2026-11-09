@@ -12,6 +12,7 @@
 #include "Components/TextBlock.h"
 #include "Components/Widget.h"
 #include "Editor.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "IAssetTools.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -430,26 +431,73 @@ void RegisterUMGTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("widget_render"),
-		TEXT("Render a Widget Blueprint to a PNG at a given resolution (no Play In Editor needed): saves it under Saved/Enginewright/Screenshots and returns it as an image. Use it to compare a screen with a mock-up."),
+		TEXT("Render a Widget Blueprint or a C++ UserWidget class to a PNG at a given resolution (no Play In Editor needed): saves it under Saved/Enginewright/Screenshots and returns it as an image. Use it to compare a screen with a mock-up. ")
+		TEXT("C++ widgets that build their tree in code (NativeOnInitialized, NativeConstruct) are created like at runtime. Without Play In Editor the widget has no owning player, and NativeOnInitialized (which Unreal skips without a player) is run once when the widget tree is still empty (nativeInit:false to skip); while Play In Editor runs, the first player owns it, so code that needs a player controller, HUD or game state can work."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Menu."},
+			"path":{"type":"string","description":"Widget Blueprint path (/Game/UI/WBP_Menu), or a UserWidget class: /Script/Module.ClassName for a C++ widget (e.g. /Script/MyGame.MyMenuPage), a short class name, or a Blueprint class path."},
 			"width":{"type":"integer","description":"Default 1920."},"height":{"type":"integer","description":"Default 1080."},
 			"inline":{"type":"boolean","description":"Return the image in the reply (default true)."},
+			"nativeInit":{"type":"boolean","description":"Without Play In Editor, run the widget's NativeOnInitialized when its tree is empty (default true)."},
 			"file":{"type":"string","description":"PNG path; default a new file under Saved/Enginewright/Screenshots."}},
 			"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
-			FEWResult Err;
-			UWidgetBlueprint* WB = LoadWB(Args, Err);
-			if (!WB) { return Err; }
+			const FString Path = EW::Str(Args, TEXT("path")).TrimStartAndEnd();
 			const int32 W = (int32)EW::Num(Args, TEXT("width"), 1920), H = (int32)EW::Num(Args, TEXT("height"), 1080);
 			if (W < 16 || H < 16 || W > 4096 || H > 4096) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("width and height must be 16 to 4096.")); }
-			if (!WB->GeneratedClass || WB->Status == BS_Error) { return Bad(TEXT("COMPILE_ERROR"), TEXT("The Widget Blueprint does not compile.")); }
+			// A Widget Blueprint asset, or a UserWidget class (C++ /Script/..., short name, Blueprint class path).
+			UClass* Cls = nullptr;
+			FString Name, Kind;
+			UWidgetBlueprint* WB = nullptr;
+			if (!Path.StartsWith(TEXT("/Script/")) && Path.StartsWith(TEXT("/")))
+			{
+				FString Ignored;
+				WB = EW::LoadAs<UWidgetBlueprint>(Path, Ignored);
+			}
+			if (WB)
+			{
+				if (!WB->GeneratedClass || WB->Status == BS_Error) { return Bad(TEXT("COMPILE_ERROR"), TEXT("The Widget Blueprint does not compile.")); }
+				Cls = WB->GeneratedClass;
+				Name = WB->GetName();
+				Kind = TEXT("widgetBlueprint");
+			}
+			else
+			{
+				FString CErr;
+				TArray<FString> Sug;
+				Cls = EW::FindClass(Path, CErr, &Sug);
+				if (!Cls)
+				{
+					return Bad(TEXT("ASSET_NOT_FOUND"), CErr + TEXT(" widget_render takes a Widget Blueprint path (/Game/UI/WBP_Menu) or a UserWidget class (/Script/MyGame.MyMenuPage)."), Sug);
+				}
+				if (!Cls->IsChildOf(UUserWidget::StaticClass()))
+				{
+					return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("'%s' is a %s class, not a UserWidget; widget_render draws Widget Blueprints and UserWidget classes."), *Cls->GetPathName(), *Cls->GetSuperClass()->GetName()));
+				}
+				if (Cls->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+				{
+					return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("'%s' is abstract or outdated and cannot be created; render a concrete subclass."), *Cls->GetPathName()));
+				}
+				Name = Cls->GetName();
+				Name.RemoveFromEnd(TEXT("_C"));
+				Kind = Cls->ClassGeneratedBy ? TEXT("blueprintClass") : TEXT("nativeClass");
+			}
 			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 			if (!World) { return Bad(TEXT("NO_LEVEL"), TEXT("No editor world.")); }
-			UUserWidget* Inst = CreateWidget<UUserWidget>(World, TSubclassOf<UUserWidget>(WB->GeneratedClass));
+			// While Play In Editor runs, the first player owns the widget (C++ widgets often ask for their player).
+			APlayerController* PC = (GEditor && GEditor->PlayWorld) ? GEditor->PlayWorld->GetFirstPlayerController() : nullptr;
+			UUserWidget* Inst = PC ? CreateWidget<UUserWidget>(PC, TSubclassOf<UUserWidget>(Cls)) : CreateWidget<UUserWidget>(World, TSubclassOf<UUserWidget>(Cls));
 			if (!Inst) { return Bad(TEXT("CREATE_FAILED"), TEXT("Could not create the widget.")); }
+			// UUserWidget::Initialize skips NativeOnInitialized when there is no player context (no PIE player), so a C++
+			// widget that builds its tree there would draw nothing. Run it once ourselves when the tree is still empty.
+			bool bInitWithoutPlayer = false;
+			if (!PC && EW::Bool(Args, TEXT("nativeInit"), true) && Inst->WidgetTree && !Inst->WidgetTree->RootWidget)
+			{
+				struct FAccess : UUserWidget { static void (UUserWidget::*Fn())() { return &FAccess::NativeOnInitialized; } };
+				(Inst->*FAccess::Fn())();
+				bInitWithoutPlayer = true;
+			}
 			TSharedRef<SWidget> Slate = Inst->TakeWidget();
 			FWidgetRenderer* Renderer = new FWidgetRenderer(/*bUseGammaCorrection*/ true);
 			UTextureRenderTarget2D* RT = FWidgetRenderer::CreateTargetFor(FVector2D(W, H), TF_Bilinear, true);
@@ -468,13 +516,17 @@ void RegisterUMGTools(FEWRegistry& R)
 			TArray64<uint8> Png;
 			if (!EW::EncodePng(Pixels, W, H, Png)) { return Bad(TEXT("CAPTURE_FAILED"), TEXT("PNG encoding failed.")); }
 			FString File = EW::Str(Args, TEXT("file"));
-			if (File.IsEmpty()) { File = FPaths::ProjectSavedDir() / TEXT("Enginewright/Screenshots") / FString::Printf(TEXT("%s_%s.png"), *WB->GetName(), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S_%s"))); }
+			if (File.IsEmpty()) { File = FPaths::ProjectSavedDir() / TEXT("Enginewright/Screenshots") / FString::Printf(TEXT("%s_%s.png"), *Name, *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S_%s"))); }
 			File = FPaths::ConvertRelativePathToFull(File);
 			if (!FFileHelper::SaveArrayToFile(Png, *File)) { return Bad(TEXT("SAVE_FAILED"), FString::Printf(TEXT("Could not write %s."), *File)); }
 			int64 NonBlack = 0;
 			for (const FColor& C : Pixels) { if (C.R > 8 || C.G > 8 || C.B > 8) { ++NonBlack; } }
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("file"), File);
+			Data->SetStringField(TEXT("class"), Cls->GetPathName());
+			Data->SetStringField(TEXT("source"), Kind);
+			Data->SetStringField(TEXT("owner"), PC ? TEXT("playInEditorPlayer") : TEXT("editorWorld"));
+			Data->SetBoolField(TEXT("initializedWithoutPlayer"), bInitWithoutPlayer);
 			Data->SetNumberField(TEXT("width"), W);
 			Data->SetNumberField(TEXT("height"), H);
 			Data->SetNumberField(TEXT("drawnPercent"), FMath::RoundToDouble(10000.0 * NonBlack / Pixels.Num()) / 100);

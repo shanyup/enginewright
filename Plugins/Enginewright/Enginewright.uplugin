@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 3,
-  "VersionName": "0.3.0",
+  "Version": 4,
+  "VersionName": "0.3.1",
   "FriendlyName": "Enginewright",
   "Description": "Native MCP server inside the Unreal Editor. No Python, Node or proxy. Strict, verified edits.",
   "Category": "Editor",

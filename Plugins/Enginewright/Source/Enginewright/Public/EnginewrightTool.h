@@ -33,6 +33,8 @@ struct ENGINEWRIGHT_API FEWTool
 	bool bWrites = false;
 	/** False for steps an editor undo cannot revert (asset create/rename/delete, saves). */
 	bool bTransactional = true;
+	/** Area shown in the panel and used to turn tools off (set by FEWRegistry::SetCategory while registering). */
+	FString Category;
 	TFunction<FEWResult(const TSharedPtr<FJsonObject>& Args)> Run;
 	/** Set instead of Run for tools that finish on a later frame (log wait, input hold, tests). */
 	TFunction<void(const TSharedPtr<FJsonObject>& Args, FEWDone Done)> RunAsync;
@@ -40,9 +42,31 @@ struct ENGINEWRIGHT_API FEWTool
 	bool IsAsync() const { return (bool)RunAsync; }
 };
 
+/** One finished top-level tool call, for the panel and enginewright_status. */
+struct ENGINEWRIGHT_API FEWCallRecord
+{
+	FString Tool;
+	bool bOk = true;
+	FString ErrorCode;
+	double Ms = 0;
+	FDateTime Time;
+};
+
 class ENGINEWRIGHT_API FEWRegistry
 {
 public:
+	/** Category given to the tools registered after this call. */
+	void SetCategory(const FString& InCategory) { CurrentCategory = InCategory; }
+	/** Categories in registration order. */
+	TArray<FString> Categories() const;
+	/** True when the settings turn this category off ("Editor" is never off). */
+	static bool IsCategoryDisabled(const FString& Category);
+
+	/** Newest last; at most 100. */
+	const TArray<FEWCallRecord>& RecentCalls() const { return Recent; }
+	/** Called when a top-level call finished (game thread). */
+	FSimpleMulticastDelegate OnCallFinished;
+
 	static FEWRegistry& Get();
 
 	/** SchemaJson is a JSON Schema object as text. */
@@ -67,4 +91,7 @@ public:
 
 private:
 	TArray<FEWTool> Tools;
+	FString CurrentCategory = TEXT("Editor");
+	TArray<FEWCallRecord> Recent;
+	void Record(const FEWTool* Tool, const FString& Name, const FEWResult& Res, double StartSeconds, const TSharedPtr<FJsonObject>& Args);
 };

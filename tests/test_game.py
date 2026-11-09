@@ -122,6 +122,42 @@ check("game wrote no log -> URL_NOT_CONFIRMED + warning", run0(r).get("verdict")
 r = fake("/Game/Maps/Test?Mode=pass?Note=a b=c?Empty=", **{"pass": ["PASSED"]})
 check("URL with spaces and '=' arrives intact", r["ok"] and run0(r).get("urlConfirmed") is True, r)
 
+# ER-09: screenshot runs end by the number of new PNG files (the game itself never quits, like -ExecCmds=HighResShot)
+t0 = time.time()
+r = fake("/Game/Maps/Test?Mode=shothang?Shots={shots}?ShotCount=2", resolutions=["96x64"], shotsExpected=2, timeout=90)
+check("shotsExpected reached -> PASSED, stopped (SHOTS_DONE), not by the timeout", r["ok"] and run0(r).get("verdict") == "PASSED"
+      and run0(r).get("stopReason") == "SHOTS_DONE" and not run0(r).get("timedOut") and time.time() - t0 < 40, r)
+check("shotsExpected run reports both PNGs, fully written", run0(r).get("shotsFound") == 2 and run0(r).get("shotsExpected") == 2
+      and len(run0(r).get("screenshots", [])) == 2 and all(s.get("matchesRes") for s in run0(r).get("screenshots", [])), run0(r))
+r = fake("/Game/Maps/Test?Mode=shothang?Shots={shots}?ShotCount=2", shotsExpected=3, timeout=6)
+check("fewer PNGs than shotsExpected -> TIMEOUT with shotsFound", run0(r).get("verdict") == "TIMEOUT" and run0(r).get("shotsFound") == 2
+      and run0(r).get("shotsExpected") == 3, r)
+r = fake("/Game/Maps/Test?Mode=shothang?Shots={shots}", shotsExpected=1, timeout=60, **{"pass": ["NO SUCH LINE"]})
+check("shotsExpected with pass patterns that never match -> NO_VERDICT (patterns still decide)", run0(r).get("verdict") == "NO_VERDICT"
+      and run0(r).get("stopReason") == "SHOTS_DONE", r)
+r = c("game_run", {"url": "/X", "shotsExpected": -1})
+check("shotsExpected below 0 -> INVALID_ARGUMENT", r.get("errorCode") == "INVALID_ARGUMENT", r)
+
+# ER-07 / ER-08: editor checks before the run (code on disk vs Live Coding, heavy editor level, realtime viewports)
+r = c("game_run", {"url": "/X", "dryRun": True})
+chk = (r.get("data") or {}).get("checks") or {}
+scene = chk.get("editorScene") or {}
+check("dryRun reports the editor checks: Live Coding patches, editor level", r["ok"] and isinstance(chk.get("liveCodingPatches"), int)
+      and scene.get("level") and isinstance(scene.get("actors"), int) and "heavy" in scene and scene.get("viewportsPaused") == 0, r)
+realtime_before = scene.get("realtimeViewports")
+r = fake("/Game/Maps/Test?Mode=pass", **{"pass": ["PASSED"]})
+sc = ((r.get("data") or {}).get("checks") or {}).get("editorScene") or {}
+check("realtime level viewports are paused for the run (default editorViewports pause)", r["ok"] and sc.get("viewportsPaused") == sc.get("realtimeViewports"), sc)
+r = c("game_run", {"url": "/X", "dryRun": True})
+check("viewports are realtime again after the run (read back)", ((r.get("data") or {}).get("checks") or {}).get("editorScene", {}).get("realtimeViewports") == realtime_before, r)
+r = fake("/Game/Maps/Test?Mode=pass", editorViewports="keep", **{"pass": ["PASSED"]})
+check("editorViewports keep -> nothing paused", r["ok"] and ((r.get("data") or {}).get("checks") or {}).get("editorScene", {}).get("viewportsPaused") == 0, r)
+r = c("game_run", {"url": "/X", "editorViewports": "stop", "dryRun": True})
+check("editorViewports with a bad value -> INVALID_ARGUMENT", r.get("errorCode") == "INVALID_ARGUMENT", r)
+d = meta("describe", {"name": "game_run"})
+check("game_run description: rebuild after C++ changes, Live Coding is not enough", d["ok"] and "editor_restart" in d["data"]["description"]
+      and "Live Coding patches only" in d["data"]["description"], d)
+
 # background: reply at once, follow with game_run_status
 r = fake("/Game/Maps/Test?Mode=pass", wait=0, **{"pass": ["PASSED"]})
 rid = (r.get("data") or {}).get("id")
@@ -212,6 +248,11 @@ if os.environ.get("ENGINEWRIGHT_TEST_GAME") == "1":
     check("real game: HighResShot PNG collected at 1280x720", any(s.get("width") == 1280 and s.get("height") == 720 for s in pngs), r)
     check("real game: PASSED and stopped by done, not by the timeout", run0(r).get("verdict") == "PASSED"
           and run0(r).get("stopReason") == "DONE_BUT_NOT_EXITED" and not run0(r).get("timedOut"), r)
+    # ER-09: the same screenshot run without any log pattern, ended by the PNG count
+    r = c("game_run", {"url": "/Engine/Maps/Templates/Template_Default?EWProbe=2", "resolutions": ["960x540"],
+                       "args": ["-ExecCmds=HighResShot 1"], "shotsExpected": 1, "timeout": 900, "wait": 900}, timeout=1000)
+    check("real game: HighResShot with shotsExpected 1 -> PASSED (SHOTS_DONE), not TIMEOUT", r["ok"] and run0(r).get("verdict") == "PASSED"
+          and run0(r).get("stopReason") == "SHOTS_DONE" and any(s.get("width") == 960 for s in run0(r).get("screenshots", [])), r)
 else:
     print("SKIP real game run (set ENGINEWRIGHT_TEST_GAME=1)")
 

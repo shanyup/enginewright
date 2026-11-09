@@ -1,6 +1,6 @@
 # Enginewright
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue)](docs/release-notes/v0.3.0.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue)](docs/release-notes/v0.3.1.md)
 [![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.8-black)](#supported-versions)
 [![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)](#supported-versions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -11,7 +11,7 @@ An Unreal Engine editor plugin that runs a [Model Context Protocol](https://mode
 
 *Above: an agent calls Enginewright tools on a fresh UE 5.8 project. It creates a menu widget and checks each change with `widget_render`, starts Play In Editor, opens the menu, reads the buttons with `ui_state`, clicks Play, and gets `COVERED` when it tries a button that another widget draws over.*
 
-> **Early preview (v0.3).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.3.0 release notes](docs/release-notes/v0.3.0.md).
+> **Early preview (v0.3).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.3.1 release notes](docs/release-notes/v0.3.1.md).
 
 ## Why
 
@@ -45,7 +45,7 @@ UE 5.8 ships an experimental MCP toolset with a larger tool catalog than Enginew
 
 ## Install (about 5 minutes)
 
-These steps were run as written on a new, empty UE 5.8 project (no C++ code) with the v0.3.0 zip.
+These steps were run as written on a new, empty UE 5.8 project (no C++ code) with the v0.3.1 zip.
 
 **Prebuilt zip (Blueprint or C++ projects, UE 5.8 Win64)**
 
@@ -73,7 +73,25 @@ These steps were run as written on a new, empty UE 5.8 project (no C++ code) wit
 2. Build your project's editor target (or open the `.uproject` and accept the rebuild prompt).
 3. Continue with step 3 above.
 
-To use another port, set the `ENGINEWRIGHT_PORT` environment variable before starting the editor.
+To use another port, change it in the Enginewright panel, or set the `ENGINEWRIGHT_PORT` environment variable before starting the editor (the variable wins).
+
+### The Enginewright panel
+
+The status bar shows `Enginewright :3100 (n)` at the bottom right: a green dot while the server listens, red when it is off or the port is in use, and the number of clients seen in the last 5 minutes. Click it (or Tools > Enginewright) to open the panel:
+
+![Status bar: Enginewright :3100 (1) with a green dot](docs/media/status-bar.png)
+
+![The Enginewright panel: server, token, client configs, clients, tool categories, read-only mode, log level, recent calls](docs/media/panel.png)
+
+*Both pictures were taken by the `editor_capture` tool.*
+
+- turn the server on or off, change the port;
+- show, copy or renew the token; copy a ready config for Claude Code, Codex, Cursor, VS Code or Hermes with one click;
+- see which clients talked to this editor and the last calls with their result and time;
+- turn whole tool categories off, or switch to read-only mode (tools that change the project are refused);
+- set the Output Log level, run `doctor`.
+
+The same settings are in Project Settings > Plugins > Enginewright, saved per user and project. Agents can read and change them with `settings_get` / `settings_set` on `EnginewrightSettings`, so read-only mode is a guard against accidents, not a security boundary.
 
 ## Tools
 
@@ -89,16 +107,16 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Enhanced Input | `input_action_create`, `input_context_create`, `input_map`, `input_unmap`, `input_context_info` |
 | Level | `level_open`, `level_save`, `actor_find`, `actor_spawn`, `actor_set_transform`, `actor_delete`, `actor_bounds`, `world_trace`, `class_measure` (size of a class or Blueprint without placing it) |
 | Play In Editor | `pie_start` (1-4 players; standalone, listen or client; waits until every player has a pawn), `pie_stop`, `pie_state`, `pie_input` (synthetic Enhanced Input action or key per player), `screenshot` (what a player sees, UI included, or the editor viewport), `screenshot_ab` (same view before and after a change, with the share of changed pixels) |
-| Run the game | `game_run` (the game in `-game` mode or a packaged exe, with a map URL that is passed unchanged and checked against the game's log; one run per resolution; verdict from log patterns; only the log lines you ask for; new PNG files collected with their real size), `game_run_status` (follow or stop a run), `image_compose` (PNG files side by side in one labelled image, read back) |
+| Run the game | `game_run` (the game in `-game` mode or a packaged exe, with a map URL that is passed unchanged and checked against the game's log; one run per resolution; verdict from log patterns; only the log lines you ask for; new PNG files collected with their real size; screenshot runs can end by PNG count; refuses to start the old C++ code after a Live Coding patch; pauses the editor's realtime viewports while the game runs), `game_run_status` (follow or stop a run), `image_compose` (PNG files side by side in one labelled image, read back) |
 | Multiplayer | `pie_actors` (what the server and each client see: count, net roles, owner, property values; can wait for replication), `pie_net_emulation` (lag, loss, duplicates, reordering; profiles off / average / bad) |
 | Readability | `screen_coverage` (how big an actor looks from a player's camera: pixels and share of the screen) |
-| UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (Widget Blueprint to PNG at any resolution, no Play In Editor) |
+| UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (a Widget Blueprint or a C++ UserWidget class to PNG at any resolution, no Play In Editor) |
 | Runtime UI (UMG + CommonUI) | `ui_state` (widgets in a player's viewport, CommonUI activatable widgets and stacks, visible buttons with label, selected state and rectangle), `ui_click` (by name or label; refuses a covered button, or fires the click directly), `ui_open` / `ui_close` (show one screen in Play In Editor, or push it onto a running CommonUI stack), `ui_input_type` (switch a player to gamepad / mouse and keyboard / touch to check glyphs and focus), `ui_input_audit` (CommonUI input wiring: missing action rows, Enhanced Input actions that never fire, duplicate actions, no input data asset). CommonUI is optional: it is used when the project has it. |
 | Localization | `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets), `stringtable_compare` (source vs translation: missing, extra, empty, untranslated, format argument differences), `loc_culture` (preview another language) |
 | Gameplay Tags | `gameplay_tags_list`, `gameplay_tag_add` (to a tag ini, strict names), `gameplay_tag_remove` (refused while assets use the tag) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
-| Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config` |
+| Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config`, `editor_capture` (the editor window or the Enginewright panel to PNG) |
 | Multi-step | `batch` (atomic, rolls back on failure) |
 
 ### Optional: compiling while the editor is closed
@@ -129,6 +147,14 @@ python tools/package.py --engine "C:/Program Files/Epic Games/UE_5.8"
 ```
 
 It runs `RunUAT BuildPlugin` for Win64, checks the result (editor DLL present, no debug or intermediate files) and writes `dist/Enginewright-<version>-UE5.8-Win64.zip` with its SHA-256 (also in `<zip>.sha256`). `tools/make_demo.py` records the demo GIF and screenshots above from a running editor (maintainers only; needs Pillow).
+
+## Contributing and requesting tools
+
+- **Missing a tool?** Let your own AI agent write the request: paste the prompt from [docs/REQUEST_WITH_AI.md](docs/REQUEST_WITH_AI.md). It checks the existing tools with `search` / `describe` first and fills in the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form.
+- **Found a bug?** Use the [Bug report](https://github.com/shanyup/enginewright/issues/new?template=bug_report.yml) form with your `doctor` output.
+- **Want to write code?** Start with [CONTRIBUTING.md](CONTRIBUTING.md) (setup, rules for tools, tests) and the [good first issues](https://github.com/shanyup/enginewright/labels/good%20first%20issue).
+
+This is a one-maintainer project in early preview: requests and pull requests are read in order, without promised dates.
 
 ## Roadmap
 

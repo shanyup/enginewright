@@ -1,5 +1,6 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
+#include "EnginewrightSettings.h"
 
 FEWResult FEWResult::Ok(TSharedPtr<FJsonObject> InData, const FString& InMessage)
 {
@@ -67,6 +68,7 @@ void FEWRegistry::Register(const FString& Name, const FString& Description, cons
 	T.InputSchema = ParseSchema(Name, SchemaJson);
 	T.bWrites = bWrites;
 	T.bTransactional = bTransactional;
+	T.Category = CurrentCategory;
 	T.Run = MoveTemp(Run);
 	Tools.Add(MoveTemp(T));
 }
@@ -80,8 +82,59 @@ void FEWRegistry::RegisterAsync(const FString& Name, const FString& Description,
 	T.InputSchema = ParseSchema(Name, SchemaJson);
 	T.bWrites = bWrites;
 	T.bTransactional = false;
+	T.Category = CurrentCategory;
 	T.RunAsync = MoveTemp(Run);
 	Tools.Add(MoveTemp(T));
+}
+
+TArray<FString> FEWRegistry::Categories() const
+{
+	TArray<FString> Out;
+	for (const FEWTool& T : Tools) { Out.AddUnique(T.Category); }
+	return Out;
+}
+
+bool FEWRegistry::IsCategoryDisabled(const FString& Category)
+{
+	if (Category == TEXT("Editor")) { return false; }
+	return GetDefault<UEnginewrightSettings>()->DisabledCategories.ContainsByPredicate([&](const FString& C) { return C.Equals(Category, ESearchCase::IgnoreCase); });
+}
+
+namespace
+{
+	/** Tools that do not write assets (bWrites false) but still change files, the editor or start processes. */
+	bool HasSideEffects(const FString& Name)
+	{
+		static const TSet<FString> Names = { TEXT("console_command"), TEXT("editor_restart"), TEXT("live_coding_compile"), TEXT("game_run"),
+			TEXT("automation_run"), TEXT("image_compose"), TEXT("loc_culture") };
+		return Names.Contains(Name);
+	}
+}
+
+void FEWRegistry::Record(const FEWTool* Tool, const FString& Name, const FEWResult& Res, double StartSeconds, const TSharedPtr<FJsonObject>& Args)
+{
+	FEWCallRecord C;
+	C.Tool = Tool ? Tool->Name : Name;
+	C.bOk = Res.bOk;
+	C.ErrorCode = Res.ErrorCode;
+	C.Ms = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
+	C.Time = FDateTime::Now();
+	Recent.Add(C);
+	if (Recent.Num() > 100) { Recent.RemoveAt(0, Recent.Num() - 100); }
+	const EEnginewrightLogLevel Level = GetDefault<UEnginewrightSettings>()->LogLevel;
+	if (Level != EEnginewrightLogLevel::Quiet)
+	{
+		const FString Result = Res.bOk ? FString(TEXT("ok")) : Res.ErrorCode;
+		if (Level == EEnginewrightLogLevel::Verbose && Args.IsValid())
+		{
+			UE_LOG(LogTemp, Display, TEXT("Enginewright: call %s -> %s (%.0f ms) args %s"), *C.Tool, *Result, C.Ms, *EW::ToJsonString(Args.ToSharedRef()).Left(2000));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("Enginewright: call %s -> %s (%.0f ms)"), *C.Tool, *Result, C.Ms);
+		}
+	}
+	OnCallFinished.Broadcast();
 }
 
 const FEWTool* FEWRegistry::Find(const FString& Name) const
@@ -192,6 +245,23 @@ FEWResult FEWRegistry::Check(const FString& Name, const TSharedPtr<FJsonObject>&
 		}
 	}
 
+	// Settings: categories turned off, read-only mode (Project Settings > Plugins > Enginewright, or the panel).
+	if (IsCategoryDisabled(Tool->Category))
+	{
+		return FEWResult::Error(TEXT("TOOL_DISABLED"),
+			FString::Printf(TEXT("'%s' is in the tool category '%s', which is turned off in the Enginewright settings (Project Settings > Plugins > Enginewright, or the Enginewright panel)."), *Tool->Name, *Tool->Category));
+	}
+	if (GetDefault<UEnginewrightSettings>()->bReadOnly && (Tool->bWrites || HasSideEffects(Tool->Name)))
+	{
+		// settings_set on Enginewright's own settings stays allowed, so read-only can be turned off again from a client.
+		const bool bOwnSettings = Tool->Name == TEXT("settings_set") && EW::Str(Args, TEXT("class")).Contains(TEXT("EnginewrightSettings"));
+		if (!bOwnSettings)
+		{
+			return FEWResult::Error(TEXT("READ_ONLY"),
+				FString::Printf(TEXT("'%s' changes the project or the editor, and Enginewright is in read-only mode (Project Settings > Plugins > Enginewright, or the Enginewright panel)."), *Tool->Name));
+		}
+	}
+
 	// PIE gate: edits during Play In Editor are lost or corrupt assets.
 	if (Tool->bWrites && EW::IsPlaying())
 	{
@@ -221,8 +291,14 @@ void FEWRegistry::CallAsync(const FString& Name, const TSharedPtr<FJsonObject>& 
 {
 	TSharedPtr<FJsonObject> Args = InArgs.IsValid() ? InArgs : MakeShared<FJsonObject>();
 	const FEWTool* Tool = nullptr;
+	const double Start = FPlatformTime::Seconds();
 	FEWResult Checked = Check(Name, Args, Tool);
-	if (!Tool) { Done(MoveTemp(Checked)); return; }
-	if (Tool->IsAsync()) { Tool->RunAsync(Args, MoveTemp(Done)); return; }
-	Done(Tool->Run(Args));
+	if (!Tool) { Record(nullptr, Name, Checked, Start, Args); Done(MoveTemp(Checked)); return; }
+	FEWDone Recorded = [this, Tool, Name, Start, Args, Done = MoveTemp(Done)](FEWResult Res)
+	{
+		Record(Tool, Name, Res, Start, Args);
+		Done(MoveTemp(Res));
+	};
+	if (Tool->IsAsync()) { Tool->RunAsync(Args, MoveTemp(Recorded)); return; }
+	Recorded(Tool->Run(Args));
 }

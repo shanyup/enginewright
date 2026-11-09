@@ -1,5 +1,7 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
+#include "EnginewrightModule.h"
+#include "EnginewrightSettings.h"
 #include "EWProps.h"
 
 #include "Engine/DeveloperSettings.h"
@@ -329,6 +331,20 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 				{
 					Res.Warnings.Add(TEXT("The editor slows down when its window is in the background, so waits and Play In Editor tests run slowly. Fix: settings_set class EditorPerformanceSettings values {\"bThrottleCPUWhenNotForeground\": false}."));
 				}
+			}
+			{
+				// This server and its settings (the panel: Tools > Enginewright).
+				const FEnginewrightModule& M = FEnginewrightModule::Get();
+				const UEnginewrightSettings* S = GetDefault<UEnginewrightSettings>();
+				TSharedRef<FJsonObject> Server = MakeShared<FJsonObject>();
+				Server->SetStringField(TEXT("version"), ENGINEWRIGHT_VERSION);
+				Server->SetStringField(TEXT("url"), M.GetUrl());
+				Server->SetNumberField(TEXT("clients"), M.GetClients().Num());
+				Server->SetBoolField(TEXT("readOnly"), S->bReadOnly);
+				TArray<TSharedPtr<FJsonValue>> Off;
+				for (const FString& C : S->DisabledCategories) { Off.Add(MakeShared<FJsonValueString>(C)); }
+				Server->SetArrayField(TEXT("disabledCategories"), Off);
+				Data->SetObjectField(TEXT("server"), Server);
 			}
 			Data->SetBoolField(TEXT("healthy"), Res.Warnings.Num() == 0);
 			Res.Data = Data;

@@ -19,7 +19,7 @@ In-editor HTTP MCP server with token, three meta tools (`search`, `describe`, `c
 
 Tested on UE 5.8 Win64 only.
 
-## v0.3 (current)
+## v0.3 (done)
 
 - Done: safer rename (`asset_rename` reports text and ID references to the old name that a redirector cannot fix; `dryRun` preview).
 - Done: measuring helpers: `class_measure` (temporary spawn, bounds, automatic clean-up), `screen_coverage` (size on a player's screen).
@@ -30,6 +30,17 @@ Tested on UE 5.8 Win64 only.
 - Done: localization: `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets, read back), `stringtable_compare` (missing, extra, empty, untranslated, format argument / rich text tag differences), `loc_culture` (switch the editor language).
 - Done: running the game from the editor: `game_run` / `game_run_status` (the game in `-game` mode or a packaged exe, with a map URL checked against its log, one run per resolution, verdict from log patterns, filtered log lines, PNG collection), `image_compose` (labelled side-by-side PNG). No Python needed.
 - Done: optional `Scripts/ewtool.py` for the one job outside the editor (see [EWTOOL.md](EWTOOL.md)): compiling while the editor is closed (waits for locks and other builds, names the process holding a DLL, UBT runs detached and outlives a killed caller).
+
+## v0.3.1 (current)
+
+Fixes from using v0.3 on a real game project, and the contribution setup:
+
+- `widget_render` also takes C++ UserWidget classes (UI built in code), not only Widget Blueprints.
+- `game_run` refuses to start the old C++ code after a Live Coding patch (a new game process loads the DLLs on disk) and warns when C++ source changed after the last build.
+- `game_run` pauses the editor's realtime level viewports while the game runs and reports a heavy editor level (Lumen, real-time sky light, volumetric clouds, many actors).
+- `game_run` `shotsExpected`: screenshot runs (e.g. `HighResShot`) end when the PNG files are written, with a PASSED verdict instead of a timeout.
+- Editor UI: status bar indicator (port, state, clients) and the Enginewright panel (server on/off, port, token, client configs, clients, tool categories, read-only mode, log level, recent calls, doctor); settings in Project Settings; `editor_capture`.
+- Issue forms (tool request, bug report), pull request template, [CONTRIBUTING.md](../CONTRIBUTING.md), [REQUEST_WITH_AI.md](REQUEST_WITH_AI.md) and labelled good first issues.
 
 ## v0.4 (next)
 
