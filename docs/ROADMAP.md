@@ -55,6 +55,9 @@ Requests from localizing a real game (English source, Turkish translation). Done
 - Done: `game_run` `culture` (the game process gets the language, not only the editor).
 - Done: `font_coverage` (characters of a language that a font cannot draw) and `game_run` `glyphMisses` (characters Slate could not draw in the running game).
 - Done: MVVM tools `viewmodel_list`, `viewmodel_add`, `viewmodel_bind`, `viewmodel_unbind`, `viewmodel_remove` (view models and view bindings of a Widget Blueprint, with conversion functions, one undo step, compile and read-back). They live in the optional `EnginewrightMVVM` plugin: Enginewright loads without the MVVM plugin, never enables it, and the tools answer `MVVM_NOT_ENABLED` until both plugins are on.
+- Done: `asset_delete` says why an asset cannot be deleted (ER-14): the referencing asset or package, an open editor, unsaved changes; `DELETE_INCOMPLETE` carries a `reason` per asset; the tool text explains `force`.
+- Done: `mesh_info` returns local bounds (min, max, center), size and the pivot offsets (from the bounds center and from the base) without spawning an actor (ER-16).
+- Done: `blueprint_set_component_defaults` writes defaults of a component inherited from a C++ parent (or an SCS component); `blueprint_info` lists inherited components; `asset_import` takes `scale` (one number or xyz), `rotation`, `translation`, `meshType` for static and skeletal meshes (ER-18).
 
 ## v0.5: what the RagnaCook demo still needs
 

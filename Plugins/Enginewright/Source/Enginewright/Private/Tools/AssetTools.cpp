@@ -5,6 +5,9 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
+#include "Editor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "UObject/UObjectGlobals.h"
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -63,6 +66,77 @@ namespace
 		TArray<TSharedPtr<FJsonValue>> Out;
 		for (const FString& S : In) { Out.Add(MakeShared<FJsonValueString>(S)); }
 		return Out;
+	}
+
+	/** Class name of the asset in a package ("Blueprint", "Material"), from the registry. */
+	FString AssetClassOf(const FString& Package)
+	{
+		TArray<FAssetData> Found;
+		Registry().GetAssetsByPackageName(FName(*Package), Found, false);
+		return Found.Num() ? Found[0].AssetClassPath.GetAssetName().ToString() : FString();
+	}
+
+	/**
+	 * Why an asset cannot be (or was not) deleted: assets and packages that reference it, an open editor, unsaved changes,
+	 * a read-only file and (bMemory) who holds the loaded object in memory, which is what keeps it from being freed.
+	 */
+	TArray<FString> WhyAssetStays(const FString& Package, UObject* Obj, const TSet<FString>& DeleteSet, bool bMemory)
+	{
+		TArray<FString> Why;
+		TArray<FString> Users;
+		for (const FString& Ref : Referencers(Package))
+		{
+			if (DeleteSet.Contains(Ref)) { continue; }
+			const FString Class = AssetClassOf(Ref);
+			Users.Add(Class.IsEmpty() ? Ref : FString::Printf(TEXT("%s (%s)"), *Ref, *Class));
+		}
+		if (Users.Num()) { Why.Add(FString::Printf(TEXT("referenced by %s"), *FString::Join(Users, TEXT(", ")))); }
+		if (Obj && IsValid(Obj))
+		{
+			if (GEditor)
+			{
+				if (UAssetEditorSubsystem* Editors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+				{
+					if (Editors->FindEditorsForAssetAndSubObjects(Obj).Num()) { Why.Add(TEXT("open in an asset editor: close it first")); }
+				}
+			}
+			if (Obj->GetOutermost()->IsDirty()) { Why.Add(TEXT("the package has unsaved changes")); }
+			if (bMemory)
+			{
+				// Who holds the loaded object in memory (what the delete reports as "in use"): objects outside the asset that point to it.
+				if (Obj->IsRooted()) { Why.Add(TEXT("the object is rooted (added to the root set by C++ code)")); }
+				FReferencerInformationList Holders;
+				UObject* Probe = Obj;
+				if (IsReferenced(Probe, GARBAGE_COLLECTION_KEEPFLAGS, EInternalObjectFlags_GarbageCollectionKeepFlags, /*bCheckSubObjects*/ true, &Holders))
+				{
+					TArray<FString> Names;
+					for (const FReferencerInformation& H : Holders.ExternalReferences)
+					{
+						if (!H.Referencer) { continue; }
+						FString Entry = FString::Printf(TEXT("%s (%s)"), *H.Referencer->GetPathName(), *H.Referencer->GetClass()->GetName());
+						if (H.ReferencingProperties.Num() && H.ReferencingProperties[0]) { Entry += FString::Printf(TEXT(" through %s"), *H.ReferencingProperties[0]->GetName()); }
+						Names.Add(Entry);
+						if (Names.Num() >= 5) { break; }
+					}
+					if (Names.Num()) { Why.Add(FString::Printf(TEXT("held in memory by %s"), *FString::Join(Names, TEXT(", ")))); }
+				}
+			}
+		}
+		FString File;
+		if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File) && IFileManager::Get().IsReadOnly(*File))
+		{
+			Why.Add(TEXT("the package file is read-only (source control checkout needed)"));
+		}
+		return Why;
+	}
+
+	TSharedRef<FJsonObject> ReasonJson(const FString& Package, const TArray<FString>& Why)
+	{
+		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+		J->SetStringField(TEXT("asset"), Package);
+		J->SetStringField(TEXT("reason"), Why.Num() ? FString::Join(Why, TEXT("; ")) : FString(TEXT("unknown: nothing in the registry, the editors or the unsaved packages explains it; read log_read for the engine's message")));
+		J->SetArrayField(TEXT("details"), ToJson(Why));
+		return J;
 	}
 
 	bool ResolveClassPath(const FString& In, FTopLevelAssetPath& Out)
@@ -301,7 +375,9 @@ void RegisterAssetTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("asset_delete"),
-		TEXT("Delete assets. Refused while anything outside the deleted set still references them (the reply lists who); force deletes anyway and breaks those references."),
+		TEXT("Delete assets. Refused (ASSET_REFERENCED) while an asset outside the deleted set still references them: data.blocking and data.reasons say which asset or package uses each one. "
+			"An asset that is still there after the delete returns DELETE_INCOMPLETE with a reason per asset in data.reasons (open in an asset editor, unsaved changes, referenced by another asset, read-only file, or the objects that hold the loaded asset in memory). "
+			"force true skips the reference check: it closes the editors of the referencing assets, deletes the placed instances of a deleted Blueprint, nulls the references inside loaded assets (they become unsaved, Enginewright does not save them) and leaves references in assets that are not loaded dangling until those are opened and saved. It does not free an asset that something else still holds in memory: that ends in DELETE_INCOMPLETE with the reason."),
 		TEXT(R"({"type":"object","properties":{
 			"paths":{"type":"array","items":{"type":"string"}},
 			"force":{"type":"boolean","description":"Delete even when referenced (default false)."}},
@@ -339,6 +415,14 @@ void RegisterAssetTools(FEWRegistry& R)
 					TEXT("Nothing was deleted: other assets still use these. Fix the referencers first, or pass force true."));
 				TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 				Data->SetArrayField(TEXT("blocking"), ToJson(Blocking));
+				TArray<TSharedPtr<FJsonValue>> Reasons;
+				for (UObject* Obj : Objects)
+				{
+					const FString Package = Obj->GetOutermost()->GetName();
+					const TArray<FString> Why = WhyAssetStays(Package, Obj, Set, /*bMemory*/ false);
+					if (Why.ContainsByPredicate([](const FString& W) { return W.StartsWith(TEXT("referenced by")); })) { Reasons.Add(MakeShared<FJsonValueObject>(ReasonJson(Package, Why))); }
+				}
+				Data->SetArrayField(TEXT("reasons"), Reasons);
 				Res.Data = Data;
 				return Res;
 			}
@@ -348,6 +432,7 @@ void RegisterAssetTools(FEWRegistry& R)
 			// Free the deleted packages now, so the same path can be created again in this session.
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			TArray<FString> Left;
+			TArray<TSharedPtr<FJsonValue>> LeftReasons;
 			for (const FString& Package : Set)
 			{
 				TArray<FAssetData> Still;
@@ -365,22 +450,34 @@ void RegisterAssetTools(FEWRegistry& R)
 					StillAsset->MarkAsGarbage();
 					StillAsset = nullptr;
 				}
-				if (Still.Num() > 0 || IsValid(StillAsset)) { Left.Add(Package); continue; }
+				if (Still.Num() > 0 || IsValid(StillAsset))
+				{
+					Left.Add(Package);
+					LeftReasons.Add(MakeShared<FJsonValueObject>(ReasonJson(Package, WhyAssetStays(Package, IsValid(StillAsset) ? StillAsset : nullptr, Set, /*bMemory*/ true))));
+					continue;
+				}
 				// The engine skips the file when its package-name cache says the package is gone (for example a
 				// package deleted and created again in this session). The package is unloaded here, so remove
 				// the leftover file ourselves; otherwise the path stays taken until the editor restarts.
 				FString File;
 				if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File))
 				{
-					if (!IFileManager::Get().Delete(*File, false, false, true)) { Left.Add(Package); }
+					if (!IFileManager::Get().Delete(*File, false, false, true))
+					{
+						Left.Add(Package);
+						TArray<FString> Why = WhyAssetStays(Package, nullptr, Set, false);
+						Why.Add(FString::Printf(TEXT("the file %s could not be deleted (locked by another program or read-only)"), *File));
+						LeftReasons.Add(MakeShared<FJsonValueObject>(ReasonJson(Package, Why)));
+					}
 				}
 			}
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetNumberField(TEXT("deleted"), Deleted);
 			Data->SetArrayField(TEXT("stillThere"), ToJson(Left));
+			Data->SetArrayField(TEXT("reasons"), LeftReasons);
 			if (Left.Num())
 			{
-				FEWResult Res = FEWResult::Error(TEXT("DELETE_INCOMPLETE"), TEXT("Some assets are still there (open in an editor, or in use)."));
+				FEWResult Res = FEWResult::Error(TEXT("DELETE_INCOMPLETE"), TEXT("Some assets are still there; data.reasons gives the reason for each one (open in an editor, unsaved changes, referenced, held in memory, file locked)."));
 				Res.Data = Data;
 				return Res;
 			}

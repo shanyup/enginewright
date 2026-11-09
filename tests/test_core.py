@@ -47,6 +47,9 @@ check("remove_rows with one missing -> nothing removed", not r["ok"] and "AppleP
 # --- rename / delete safety
 r = c("asset_delete", {"paths": [T + "/BP_EWCopy"]})
 check("delete referenced -> refused with blocking list", not r["ok"] and r["errorCode"] == "ASSET_REFERENCED" and r["data"]["blocking"], r)
+rs = r.get("data", {}).get("reasons", [])
+check("ER-14: the refusal names a reason per asset (which asset references it, with its class)",
+      len(rs) == 1 and rs[0]["asset"] == T + "/BP_EWCopy" and "referenced by" in rs[0]["reason"] and rs[0]["details"], r)
 # a name field that holds the asset name as text: a redirector cannot fix it, the rename must report it
 r = c("datatable_set_rows", {"path": T + "/DT_EW", "rows": {"Bread": {"DisplayName": "Bread", "ProcessedItemID": "BP_EWCopy"}}})
 check("row with the asset name as an ID", r["ok"], r)

@@ -23,6 +23,25 @@ namespace
 		return { MakeShared<FJsonValueNumber>(FMath::RoundToDouble(V.X * 100) / 100), MakeShared<FJsonValueNumber>(FMath::RoundToDouble(V.Y * 100) / 100), MakeShared<FJsonValueNumber>(FMath::RoundToDouble(V.Z * 100) / 100) };
 	}
 
+	/** Local bounds (mesh space, pivot at the origin), size and where the pivot sits relative to the bounds. No actor is spawned. */
+	void AddBounds(const TSharedRef<FJsonObject>& D, const FBox& Box)
+	{
+		const FVector Center = Box.GetCenter(), Min = Box.Min, Max = Box.Max;
+		D->SetArrayField(TEXT("size"), Vec(Box.GetSize()));
+		D->SetArrayField(TEXT("boundsMin"), Vec(Min));
+		D->SetArrayField(TEXT("boundsMax"), Vec(Max));
+		D->SetArrayField(TEXT("boundsCenter"), Vec(Center));
+		// Pivot = the mesh origin. Offsets say where the pivot is, measured from the bounds center and from the bottom center of the bounds.
+		const FVector FromCenter = -Center;
+		const FVector FromBase(-Center.X, -Center.Y, -Min.Z);
+		D->SetArrayField(TEXT("pivotFromCenter"), Vec(FromCenter));
+		D->SetArrayField(TEXT("pivotFromBase"), Vec(FromBase));
+		const double Tol = FMath::Max(0.01, Box.GetSize().GetMax() * 0.001);
+		const bool bCenter = FromCenter.GetAbsMax() <= Tol;
+		const bool bBase = FMath::Abs(FromBase.X) <= Tol && FMath::Abs(FromBase.Y) <= Tol && FMath::Abs(FromBase.Z) <= Tol;
+		D->SetStringField(TEXT("pivot"), bCenter ? TEXT("center") : bBase ? TEXT("base") : TEXT("other"));
+	}
+
 	bool SaveAsset(UObject* A, FEWResult& Res)
 	{
 		A->MarkPackageDirty();
@@ -50,7 +69,7 @@ namespace
 void RegisterMeshTextureTools(FEWRegistry& R)
 {
 	R.Register(TEXT("mesh_info"),
-		TEXT("Describe a static or skeletal mesh: bounds size, LODs with vertex and triangle counts, material slots, collision, Nanite; skeletal: bone count, skeleton, physics asset."),
+		TEXT("Describe a static or skeletal mesh without spawning an actor: local bounds (boundsMin, boundsMax, boundsCenter, size, in cm, mesh space with the pivot at the origin), where the pivot sits (pivotFromCenter, pivotFromBase = pivot minus the bottom center of the bounds, pivot = center / base / other), LODs with vertex and triangle counts, material slots, collision, Nanite; skeletal: bone count, skeleton, physics asset. Use it to size and place a mesh before you put it in a level."),
 		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -63,7 +82,7 @@ void RegisterMeshTextureTools(FEWRegistry& R)
 			if (UStaticMesh* SM = Cast<UStaticMesh>(Obj))
 			{
 				D->SetStringField(TEXT("kind"), TEXT("static"));
-				D->SetArrayField(TEXT("size"), Vec(SM->GetBoundingBox().GetSize()));
+				AddBounds(D, SM->GetBoundingBox());
 				TArray<TSharedPtr<FJsonValue>> Lods;
 				for (int32 i = 0; i < SM->GetNumLODs(); ++i)
 				{
@@ -89,7 +108,7 @@ void RegisterMeshTextureTools(FEWRegistry& R)
 			if (USkeletalMesh* SK = Cast<USkeletalMesh>(Obj))
 			{
 				D->SetStringField(TEXT("kind"), TEXT("skeletal"));
-				D->SetArrayField(TEXT("size"), Vec(SK->GetBounds().GetBox().GetSize()));
+				AddBounds(D, SK->GetBounds().GetBox());
 				D->SetNumberField(TEXT("bones"), SK->GetRefSkeleton().GetNum());
 				D->SetNumberField(TEXT("lods"), SK->GetLODNum());
 				D->SetStringField(TEXT("skeleton"), SK->GetSkeleton() ? SK->GetSkeleton()->GetPathName() : FString());
