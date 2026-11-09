@@ -79,7 +79,11 @@ To use another port, change it in the Enginewright panel, or set the `ENGINEWRIG
 
 The status bar shows `Enginewright :3100 (n)` at the bottom right: a green dot while the server listens, red when it is off or the port is in use, and the number of clients seen in the last 5 minutes. Click it (or Tools > Enginewright) to open the panel:
 
-<!-- PANEL_SCREENSHOT -->
+![Status bar: Enginewright :3100 (1) with a green dot](docs/media/status-bar.png)
+
+![The Enginewright panel: server, token, client configs, clients, tool categories, read-only mode, log level, recent calls](docs/media/panel.png)
+
+*Both pictures were taken by the `editor_capture` tool.*
 
 - turn the server on or off, change the port;
 - show, copy or renew the token; copy a ready config for Claude Code, Codex, Cursor, VS Code or Hermes with one click;

@@ -59,36 +59,108 @@ Do not invent results of calls you did not make. Keep my project's private names
 
 ## Example
 
-Task given to the agent: *"Bind a TextBlock in my shop widget to a property of an MVVM view model."*
+This is a real run of the prompt above by Claude (Enginewright 0.3.1, UE 5.8.4, a blank test project without the MVVM plugin), unedited. Task given to the agent: *"Bind a TextBlock in my shop widget to a property of an MVVM view model."*
 
-The agent called `doctor`, then `search` with "view model", "MVVM binding", "widget binding" and "bind widget property". The closest tools were `widget_set`, `widget_get` and `object_set`; their `describe` output has no binding arguments, so it wrote a request. Shortened:
+The agent called `doctor`, then `search` six times ("view model", "MVVM binding", "MVVM", "viewmodel", "bind widget property to view model", "widget binding") and `describe` on `widget_set`, `widget_get` and `object_set`. It found that the widget itself can be built with existing tools, and wrote a request only for the missing part:
 
+<details>
+<summary>The agent's full reply</summary>
+
+> Checked with doctor: Unreal Engine 5.8.4, Enginewright 0.3.1.
+>
+> Searches: "view model" (no binding tool; screenshot/UI tools only), "MVVM binding" (no match), "MVVM" (no match),
+> "viewmodel" (no match), "bind widget property to view model" (widget_add, widget_get, widget_render, ...),
+> "widget binding" (widget_create, widget_tree, widget_get, widget_add, widget_set, widget_remove, widget_render, ui_state).
+> Described widget_set, widget_get and object_set: none of them has an argument for a view model or a binding.
+>
+> Can it be done with existing tools? Partly. widget_create / widget_add can build the widget (a TextBlock named Gold),
+> and widget_set can set a fixed Text. Adding a view model to the Widget Blueprint and binding Text to a view model
+> property is missing, so the request below covers only that part.
+>
 > ### What should the agent be able to do?
-> As a developer who uses UMG with the MVVM plugin, I want my agent to add a view model to a Widget Blueprint and bind a widget property to a view model property, so that it can wire a screen without me opening the View Bindings panel.
+> As a developer who uses UMG with the MVVM plugin (UMG Viewmodel), I want my agent to add a view model to a Widget Blueprint and bind a widget property to a view model property, so that it can wire a screen without me opening the View Bindings panel.
 >
 > ### How is it done today?
-> By hand in the Widget Blueprint editor (Window > View Bindings). Tried `search` "view model", "MVVM binding", "widget binding": results were `widget_set`, `widget_get`, `object_set`; none of them can add a view model or a binding.
+> By hand in the Widget Blueprint editor: Window > Viewmodels to add the view model, then Window > View Bindings to add each binding.
+> Tried with Enginewright: search "view model", "MVVM binding", "MVVM", "viewmodel" (no binding tool, three searches had no match), "bind widget property to view model" and "widget binding" (widget_add, widget_get, widget_set, widget_tree, widget_create). describe on widget_set, widget_get and object_set: they set or read fixed property values only; there is no argument for a view model or a binding.
 >
 > ### Proposed tool name
-> `viewmodel_bind`
+> viewmodel_bind
 >
 > ### Input (JSON schema)
 > ```json
-> {"type":"object","properties":{
->   "path":{"type":"string","description":"Widget Blueprint path, e.g. /Game/UI/WBP_Shop"},
->   "viewModel":{"type":"string","description":"View model class (MVVMViewModelBase subclass)"},
->   "bindings":{"type":"array","description":"[{widget, property, source}] e.g. {\"widget\":\"Gold\",\"property\":\"Text\",\"source\":\"Gold\"}"},
->   "dryRun":{"type":"boolean","description":"Only report what would change"}},
->  "required":["path","viewModel","bindings"]}
+> {
+>   "type": "object",
+>   "properties": {
+>     "path": {"type": "string", "description": "Widget Blueprint path, e.g. /Game/UI/WBP_Shop."},
+>     "viewModel": {"type": "string", "description": "View model class (an MVVMViewModelBase subclass), e.g. /Script/MyGame.ShopViewModel or a Blueprint class path."},
+>     "viewModelName": {"type": "string", "description": "Name of the view model in the widget; default is the class name."},
+>     "creation": {"type": "string", "enum": ["CreateInstance", "Manual", "GlobalCollection", "PropertyPath"], "description": "How the widget gets its view model instance; default CreateInstance."},
+>     "bindings": {
+>       "type": "array",
+>       "description": "Bindings to add.",
+>       "items": {
+>         "type": "object",
+>         "properties": {
+>           "widget": {"type": "string", "description": "Widget name in the tree, e.g. Gold."},
+>           "property": {"type": "string", "description": "Widget property to set, e.g. Text."},
+>           "source": {"type": "string", "description": "View model property (FieldNotify), e.g. Gold."},
+>           "mode": {"type": "string", "enum": ["OneWayToWidget", "OneWayToViewModel", "TwoWay", "OneTimeToWidget"], "description": "Default OneWayToWidget."},
+>           "conversion": {"type": "string", "description": "Optional conversion function, e.g. /Script/Engine.KismetTextLibrary:Conv_IntToText."}
+>         },
+>         "required": ["widget", "property", "source"]
+>       }
+>     },
+>     "dryRun": {"type": "boolean", "description": "Only check and report what would change; write nothing."}
+>   },
+>   "required": ["path", "viewModel", "bindings"]
+> }
 > ```
-> ...
+>
+> ### Expected output
+> ```json
+> {
+>   "ok": true,
+>   "data": {
+>     "path": "/Game/UI/WBP_Shop",
+>     "viewModel": {"name": "ShopViewModel", "class": "/Script/MyGame.ShopViewModel", "creation": "CreateInstance", "added": true},
+>     "bindings": [
+>       {"widget": "Gold", "property": "Text", "source": "Gold", "mode": "OneWayToWidget", "conversion": "Conv_IntToText", "added": true}
+>     ],
+>     "compiled": true,
+>     "saved": true,
+>     "readBack": {"viewModels": ["ShopViewModel"], "bindingCount": 1}
+>   }
+> }
+> ```
+> Errors: ASSET_NOT_FOUND (path), CLASS_NOT_FOUND (viewModel is not a view model class), WIDGET_NOT_FOUND, PROPERTY_NOT_FOUND (widget or view model property), TYPE_MISMATCH (needs a conversion function), PLUGIN_DISABLED (ModelViewViewModel plugin is off), INVALID_ARGUMENT. On any error nothing is written.
+>
+> ### Does it change the project?
+> Writes assets or the level
+>
+> ### Can the change be undone?
+> No (creates, renames, deletes or saves assets)
+>
+> ### Unreal Engine version
+> 5.8
+>
+> ### Example in a project
+> Blank project with the ModelViewViewModel plugin enabled. A view model class ShopViewModel (MVVMViewModelBase) with an int FieldNotify property Gold. A Widget Blueprint /Game/UI/WBP_Shop with a TextBlock named Gold. The tool adds ShopViewModel to WBP_Shop and binds Gold.Text to ShopViewModel.Gold through Conv_IntToText.
 >
 > ### Acceptance test
-> 1. `widget_create` /Game/_EWTest/WBP_Shop with a TextBlock "Gold"; a view model class with an int property Gold.
-> 2. `viewmodel_bind` {path, viewModel, bindings:[{widget:"Gold", property:"Text", source:"Gold"}]} -> ok, the binding is read back, the Blueprint compiles.
-> 3. Same call with widget "Nope" -> WIDGET_NOT_FOUND, nothing written.
+> 1. widget_create /Game/_EWTest/WBP_Shop, widget_add a TextBlock named Gold -> ok.
+> 2. viewmodel_bind {path, viewModel: ShopViewModel, bindings: [{widget: "Gold", property: "Text", source: "Gold", conversion: "Conv_IntToText"}], dryRun: true} -> ok, reports one view model and one binding to add; widget_tree and the asset are unchanged.
+> 3. Same call without dryRun -> ok, readBack lists ShopViewModel and one binding, compiled true.
+> 4. Same call again -> ok, added false (no duplicate binding).
+> 5. Same call with widget "Nope" -> WIDGET_NOT_FOUND, nothing written (binding count still 1).
+> 6. Delete /Game/_EWTest/WBP_Shop.
+>
+> ### Anything else
+> Plugin ModelViewViewModel (UMG Viewmodel). Classes I know are involved: UMVVMViewModelBase, UMVVMWidgetBlueprintExtension_View, UMVVMBlueprintView (AddViewModel, AddBinding), FMVVMBlueprintViewBinding. A read tool (viewmodel_list: view models and bindings of a widget) would help to check the result.
 
-This is the kind of request we can turn into a tool: it names the task, shows that no existing tool covers it, and gives a test that can go into `tests/`.
+</details>
+
+Every `###` heading matches a field of the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form, in the same order; the two dropdown answers are options of the form, and both JSON blocks parse. This is the kind of request we can turn into a tool: it names the task, shows that no existing tool covers it, and gives a test that can go into `tests/`.
 
 ## What happens next
 

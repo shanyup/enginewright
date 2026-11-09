@@ -432,11 +432,12 @@ void RegisterUMGTools(FEWRegistry& R)
 
 	R.Register(TEXT("widget_render"),
 		TEXT("Render a Widget Blueprint or a C++ UserWidget class to a PNG at a given resolution (no Play In Editor needed): saves it under Saved/Enginewright/Screenshots and returns it as an image. Use it to compare a screen with a mock-up. ")
-		TEXT("C++ widgets that build their tree in code (NativeOnInitialized, NativeConstruct) are created like at runtime. Without Play In Editor the widget has no owning player; while Play In Editor runs, the first player owns it, so code that needs a player controller, HUD or game state can work."),
+		TEXT("C++ widgets that build their tree in code (NativeOnInitialized, NativeConstruct) are created like at runtime. Without Play In Editor the widget has no owning player, and NativeOnInitialized (which Unreal skips without a player) is run once when the widget tree is still empty (nativeInit:false to skip); while Play In Editor runs, the first player owns it, so code that needs a player controller, HUD or game state can work."),
 		TEXT(R"({"type":"object","properties":{
 			"path":{"type":"string","description":"Widget Blueprint path (/Game/UI/WBP_Menu), or a UserWidget class: /Script/Module.ClassName for a C++ widget (e.g. /Script/MyGame.MyMenuPage), a short class name, or a Blueprint class path."},
 			"width":{"type":"integer","description":"Default 1920."},"height":{"type":"integer","description":"Default 1080."},
 			"inline":{"type":"boolean","description":"Return the image in the reply (default true)."},
+			"nativeInit":{"type":"boolean","description":"Without Play In Editor, run the widget's NativeOnInitialized when its tree is empty (default true)."},
 			"file":{"type":"string","description":"PNG path; default a new file under Saved/Enginewright/Screenshots."}},
 			"required":["path"]})"),
 		false,
@@ -488,6 +489,15 @@ void RegisterUMGTools(FEWRegistry& R)
 			APlayerController* PC = (GEditor && GEditor->PlayWorld) ? GEditor->PlayWorld->GetFirstPlayerController() : nullptr;
 			UUserWidget* Inst = PC ? CreateWidget<UUserWidget>(PC, TSubclassOf<UUserWidget>(Cls)) : CreateWidget<UUserWidget>(World, TSubclassOf<UUserWidget>(Cls));
 			if (!Inst) { return Bad(TEXT("CREATE_FAILED"), TEXT("Could not create the widget.")); }
+			// UUserWidget::Initialize skips NativeOnInitialized when there is no player context (no PIE player), so a C++
+			// widget that builds its tree there would draw nothing. Run it once ourselves when the tree is still empty.
+			bool bInitWithoutPlayer = false;
+			if (!PC && EW::Bool(Args, TEXT("nativeInit"), true) && Inst->WidgetTree && !Inst->WidgetTree->RootWidget)
+			{
+				struct FAccess : UUserWidget { static void (UUserWidget::*Fn())() { return &FAccess::NativeOnInitialized; } };
+				(Inst->*FAccess::Fn())();
+				bInitWithoutPlayer = true;
+			}
 			TSharedRef<SWidget> Slate = Inst->TakeWidget();
 			FWidgetRenderer* Renderer = new FWidgetRenderer(/*bUseGammaCorrection*/ true);
 			UTextureRenderTarget2D* RT = FWidgetRenderer::CreateTargetFor(FVector2D(W, H), TF_Bilinear, true);
@@ -516,6 +526,7 @@ void RegisterUMGTools(FEWRegistry& R)
 			Data->SetStringField(TEXT("class"), Cls->GetPathName());
 			Data->SetStringField(TEXT("source"), Kind);
 			Data->SetStringField(TEXT("owner"), PC ? TEXT("playInEditorPlayer") : TEXT("editorWorld"));
+			Data->SetBoolField(TEXT("initializedWithoutPlayer"), bInitWithoutPlayer);
 			Data->SetNumberField(TEXT("width"), W);
 			Data->SetNumberField(TEXT("height"), H);
 			Data->SetNumberField(TEXT("drawnPercent"), FMath::RoundToDouble(10000.0 * NonBlack / Pixels.Num()) / 100);

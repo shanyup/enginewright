@@ -89,7 +89,12 @@ r = c("widget_render", {"path": "/Script/EnginewrightTest.EWTestNativeWidget", "
 if r.get("errorCode") == "ASSET_NOT_FOUND":
     print("SKIP native C++ widget render (copy tests/fixtures/EWTestNativeWidget.* into the test project)")
 else:
-    check("C++ UserWidget (tree built in code) renders -> nativeClass, drawn", r["ok"] and r["data"]["source"] == "nativeClass" and r["data"]["drawnPercent"] > 5, r)
+    check("C++ UserWidget (tree built in code) renders -> nativeClass, drawn", r["ok"] and r["data"]["source"] == "nativeClass" and r["data"]["drawnPercent"] > 5
+          and r["data"]["initializedWithoutPlayer"] is True, r)
+    # Unreal skips NativeOnInitialized without a player; nativeInit:false shows that (empty image, warning)
+    r = c("widget_render", {"path": "/Script/EnginewrightTest.EWTestNativeWidget", "width": 400, "height": 200, "inline": False, "nativeInit": False})
+    check("nativeInit:false -> NativeOnInitialized not run, empty image + warning", r["ok"] and r["data"]["drawnPercent"] == 0
+          and r["data"]["initializedWithoutPlayer"] is False and r.get("warnings"), r)
 
 r = c("widget_remove", {"path": W, "name": "Menu"})
 check("widget_remove removes the subtree", r["ok"] and sorted(r["data"]["removed"]) == ["Menu", "PlayButton", "PlayLabel", "Title"] and list(tree()) == [root], r)
