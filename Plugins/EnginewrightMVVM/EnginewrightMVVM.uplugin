@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 4,
-  "VersionName": "0.3.1",
+  "Version": 5,
+  "VersionName": "0.4.0",
   "FriendlyName": "Enginewright MVVM",
   "Description": "Adds MVVM support (viewmodel_list, viewmodel_add, viewmodel_bind, viewmodel_unbind, viewmodel_remove) to Enginewright. Needs Epic's UMG Viewmodel plugin. Leave it off in projects that do not use MVVM: Enginewright works without it.",
   "Category": "Editor",
