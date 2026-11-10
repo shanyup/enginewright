@@ -389,7 +389,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_info"),
 		TEXT("Describe a Blueprint: parent class, compile status, variables (type, default, category), components added by the Blueprint (components), components inherited from the C++ parent or a parent Blueprint (inheritedComponents: name, native property, class, source, template path), graphs and functions. Change component defaults with blueprint_set_component_defaults."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -450,7 +450,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_compile"),
 		TEXT("Compile Blueprints and report errors and warnings per Blueprint. Pass paths, or a folder to compile every Blueprint under it."),
 		TEXT(R"({"type":"object","properties":{
-			"paths":{"type":"array","items":{"type":"string"}},
+			"paths":{"type":"array","items":{"type":"string"},"description":"Blueprint asset paths, e.g. [\"/Game/Blueprints/BP_Door\"]. Use folder for a whole folder."},
 			"folder":{"type":"string","description":"Compile all Blueprints under this folder, e.g. /Game."},
 			"save":{"type":"boolean","description":"Save after a clean compile (default false)."}}})"),
 		true,
@@ -490,7 +490,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_variables"),
 		TEXT("Add member variables to a Blueprint: [{name, type, default, category, instanceEditable}]. All are checked first (name clash, type); then added, compiled, read back from the class defaults, and saved."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
 			"variables":{"type":"array","items":{"type":"object"},"description":"type uses the struct_create type strings; default is the value as text (e.g. '1.5', 'true', '(X=1,Y=2,Z=3)')."}},
 			"required":["path","variables"]})"),
 		true,
@@ -577,7 +577,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_remove_variables"),
 		TEXT("Remove member variables from a Blueprint (and the nodes that use them), compile and save."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"names":{"type":"array","items":{"type":"string"}}},"required":["path","names"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"names":{"type":"array","items":{"type":"string"},"description":"Variable names to remove, e.g. [\"Health\"]."}},"required":["path","names"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -603,7 +603,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_component"),
 		TEXT("Add a component to an Actor Blueprint (e.g. StaticMeshComponent, PointLightComponent), optionally under a parent component and with property values checked like object_set; compile and save."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
 			"class":{"type":"string","description":"Component class, e.g. StaticMeshComponent."},
 			"name":{"type":"string","description":"Component name (variable name)."},
 			"parent":{"type":"string","description":"Parent scene component name; default is the root."},
@@ -736,7 +736,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_remove_component"),
 		TEXT("Remove a component added in this Blueprint (children move up to its parent), compile and save."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path","name"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"name":{"type":"string","description":"Component name (variable name), e.g. StaticMeshComponent1."}},"required":["path","name"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -753,7 +753,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_graph_read"),
 		TEXT("Read a Blueprint graph: nodes (id, class, title, position) and their pins (name, direction, type, default, links as nodeId.pin)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"graph":{"type":"string","description":"Graph name, default EventGraph."}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"graph":{"type":"string","description":"Graph name, default EventGraph."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -774,9 +774,9 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_node"),
 		TEXT("Add a node to a Blueprint graph. kind: event (BeginPlay, Tick or any overridable event), custom_event, call (a function: PrintString, Class.Function, or a function of this Blueprint), get / set (a variable), branch. Returns the node id and pins; wire it with blueprint_connect."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"graph":{"type":"string","description":"Default EventGraph."},
-			"kind":{"type":"string","enum":["event","custom_event","call","get","set","branch"]},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
+			"kind":{"type":"string","enum":["event","custom_event","call","get","set","branch"],"description":"Node kind: event, custom_event, call, get, set or branch."},
 			"name":{"type":"string","description":"Event, function or variable name (not needed for branch)."},
 			"position":{"type":"array","items":{"type":"number"},"description":"[x, y]"}},
 			"required":["path","kind"]})"),
@@ -895,8 +895,8 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_connect"),
 		TEXT("Connect two pins in a Blueprint graph: from an output pin to an input pin, each as nodeId.pin (pin names from blueprint_graph_read; aliases exec/then and #index work). The connection is checked by the graph schema and read back."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"graph":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
 			"from":{"type":"string","description":"Output pin, e.g. 3F2A9C10B4D1.then"},
 			"to":{"type":"string","description":"Input pin, e.g. 77AB12CD9E00.InString"}},
 			"required":["path","from","to"]})"),
@@ -944,9 +944,10 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_set_pin"),
 		TEXT("Set the default value of an unconnected input pin (text form, e.g. 'Hello', '2.5', 'true', '(X=1,Y=0,Z=0)' or an asset path for object pins). The schema checks the value and it is read back."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"graph":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
 			"pin":{"type":"string","description":"nodeId.pin"},
-			"value":{"type":"string"}},
+			"value":{"type":"string","description":"New default value as text, e.g. Hello, 2.5, true, (X=1,Y=0,Z=0), or an asset path for object pins."}},
 			"required":["path","pin","value"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -996,7 +997,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_remove_node"),
 		TEXT("Remove a node from a Blueprint graph (its links are broken)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"graph":{"type":"string"},"node":{"type":"string"}},"required":["path","node"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"graph":{"type":"string","description":"Graph name, default EventGraph."},"node":{"type":"string","description":"Node id from blueprint_graph_read, e.g. 3F2A9C10B4D1."}},"required":["path","node"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

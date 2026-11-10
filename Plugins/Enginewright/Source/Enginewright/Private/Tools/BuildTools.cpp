@@ -210,7 +210,7 @@ void RegisterBuildTools(FEWRegistry& R)
 	R.RegisterAsync(TEXT("automation_run"),
 		TEXT("Run automation tests whose names start with filter (e.g. Project.MyGame or System.Core.Math) in the editor and return each test's result. Use automation_list to see names."),
 		TEXT(R"({"type":"object","properties":{
-			"filter":{"type":"string"},
+			"filter":{"type":"string","description":"Test name prefix; names that start with it run, e.g. Project.MyGame."},
 			"timeout":{"type":"number","description":"Seconds, default 300."}},
 			"required":["filter"]})"),
 		false,
@@ -279,7 +279,7 @@ void RegisterBuildTools(FEWRegistry& R)
 
 	R.RegisterAsync(TEXT("automation_list"),
 		TEXT("List automation test names that contain filter (e.g. Project., System.Core.Math)."),
-		TEXT(R"({"type":"object","properties":{"filter":{"type":"string"},"limit":{"type":"integer","description":"Default 200."}}})"),
+		TEXT(R"({"type":"object","properties":{"filter":{"type":"string","description":"Substring of the test name; matches anywhere in the name, e.g. Core.Math."},"limit":{"type":"integer","description":"Default 200."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
 		{

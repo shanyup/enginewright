@@ -355,7 +355,7 @@ void RegisterMaterialTools(FEWRegistry& R)
 
 	R.Register(TEXT("material_info"),
 		TEXT("Describe a material or material instance: expressions with their inputs and links, which node feeds each material input, and parameters with values (instances: overridden flags)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Material or material instance asset path, e.g. /Game/Materials/M_Rock."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -379,11 +379,11 @@ void RegisterMaterialTools(FEWRegistry& R)
 	R.Register(TEXT("material_add_expression"),
 		TEXT("Add an expression node to a material, e.g. Multiply, Add, Lerp, Constant3Vector, TextureCoordinate, ScalarParameter, VectorParameter, TextureSampleParameter2D, StaticSwitchParameter. name sets the parameter name; values sets node properties (checked like object_set). Returns the node id for material_connect."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Material asset path, e.g. /Game/Materials/M_Rock."},
 			"class":{"type":"string","description":"Expression class without the MaterialExpression prefix."},
 			"name":{"type":"string","description":"Parameter name (parameter nodes only)."},
-			"values":{"type":"object"},
-			"position":{"type":"array","items":{"type":"number"}}},
+			"values":{"type":"object","description":"Node property values, e.g. {\"R\":1,\"G\":0,\"B\":0}."},
+			"position":{"type":"array","items":{"type":"number"},"description":"Graph position [x, y] in pixels."}},
 			"required":["path","class"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -438,7 +438,7 @@ void RegisterMaterialTools(FEWRegistry& R)
 	R.Register(TEXT("material_connect"),
 		TEXT("Connect a material node output to another node's input or to a material input (BaseColor, Roughness, Normal...). Pins by name, #index, or empty for single-input nodes. The link is read back and the material recompiled."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Material asset path, e.g. /Game/Materials/M_Rock."},
 			"from":{"type":"string","description":"Node id or parameter name."},
 			"fromOutput":{"type":"string","description":"Output name or #index; default first output."},
 			"to":{"type":"string","description":"Node id, parameter name, or a material input such as BaseColor."},
@@ -486,8 +486,9 @@ void RegisterMaterialTools(FEWRegistry& R)
 	R.Register(TEXT("material_instance_create"),
 		TEXT("Create a material instance of a material (or of another instance), with parameter values checked against the parent's parameters: numbers for scalars, [r,g,b(,a)] for vectors, texture paths, true/false for static switches."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"parent":{"type":"string"},
-			"parameters":{"type":"object"}},
+			"path":{"type":"string","description":"New instance asset path, e.g. /Game/Materials/MI_Rock."},
+			"parent":{"type":"string","description":"Parent material or instance asset path, e.g. /Game/Materials/M_Rock."},
+			"parameters":{"type":"object","description":"Parameter values: number (scalar), [r,g,b(,a)] (vector), texture path, true/false (static switch)."}},
 			"required":["path","parent"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -531,7 +532,10 @@ void RegisterMaterialTools(FEWRegistry& R)
 
 	R.Register(TEXT("material_instance_set"),
 		TEXT("Set parameter values on a material instance. Every name and value is checked against the parent first (unknown name = error with suggestions, nothing written); values are read back and saved."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"parameters":{"type":"object"}},"required":["path","parameters"]})"),
+		TEXT(R"({"type":"object","properties":{
+			"path":{"type":"string","description":"Material instance asset path, e.g. /Game/Materials/MI_Rock."},
+			"parameters":{"type":"object","description":"Parameter values: number (scalar), [r,g,b(,a)] (vector), texture path, true/false (static switch)."}},
+			"required":["path","parameters"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

@@ -2,9 +2,9 @@
 
 Needs a running editor on ENGINEWRIGHT_TEST_PROJECT (any project; fixtures are created by the tests).
 """
-import os, sys
+import glob, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ewtest import ROOT, PROJ, call as c, check, done, delete_if_exists, fixtures
+from ewtest import ROOT, PROJ, call as c, check, done, delete_if_exists, fixtures, rpc
 
 T = ROOT
 fx = fixtures()
@@ -149,5 +149,26 @@ r = c("level_open", {"path": back, "discard": True})
 check("reopen the original map", r["ok"], r)
 delete_if_exists(T + "/MAP_EWSaveAs")
 check("saved test map deleted", not c("asset_exists", {"path": T + "/MAP_EWSaveAs"})["data"]["exists"] and not save_file.exists())
+
+# --- every tool argument has a type and a description (describe shows the schema agents see)
+def meta(tool, args):
+    s, r = rpc("tools/call", {"name": tool, "arguments": args})
+    return r["result"]["structuredContent"] if s == 200 else {"ok": False, "http": s, "body": r}
+
+TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Plugins", "Enginewright", "Source", "Enginewright", "Private", "Tools")
+tool_names = set()
+for path in glob.glob(os.path.join(TOOLS_DIR, "*.cpp")):
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        tool_names.update(re.findall(r'R\.Register(?:Async)?\(TEXT\("([a-z_0-9]+)"\)', fh.read()))
+undocumented = []
+for name in sorted(tool_names):
+    d = meta("describe", {"name": name})
+    if not d["ok"]:
+        undocumented.append(name + " (describe failed)")
+        continue
+    for arg, prop in d["data"]["inputSchema"].get("properties", {}).items():
+        if not prop.get("description") or "type" not in prop:
+            undocumented.append(name + "." + arg)
+check("every argument of every tool has a type and a description", not undocumented, undocumented)
 
 done()

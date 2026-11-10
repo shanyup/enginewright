@@ -105,7 +105,7 @@ void RegisterSceneTools(FEWRegistry& R)
 		TEXT(R"({"type":"object","properties":{
 			"class":{"type":"string","description":"Short class name, /Script path or Blueprint path; subclasses match too."},
 			"label":{"type":"string","description":"Outliner label wildcard, e.g. *Stove*."},
-			"tag":{"type":"string"},
+			"tag":{"type":"string","description":"Actor tag (the actor's Tags list, not a gameplay tag), e.g. ChangeLevel."},
 			"limit":{"type":"integer","description":"Default 100."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -143,10 +143,10 @@ void RegisterSceneTools(FEWRegistry& R)
 		TEXT("Place an actor in the open editor level (one undo step). The level is not saved; use asset_save."),
 		TEXT(R"({"type":"object","properties":{
 			"class":{"type":"string","description":"Short class name, /Script path or Blueprint path."},
-			"label":{"type":"string"},
-			"location":{"description":"[x,y,z] or {x,y,z}."},
-			"rotation":{"description":"[pitch,yaw,roll] or {pitch,yaw,roll}."},
-			"scale":{"description":"[x,y,z]."}},
+			"label":{"type":"string","description":"Outliner label for the actor; default from the class name."},
+			"location":{"type":["array","object"],"description":"World position in cm, [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}. Default 0,0,0."},
+			"rotation":{"type":["array","object"],"description":"Rotation in degrees, [pitch, yaw, roll] or {\"pitch\":..,\"yaw\":..,\"roll\":..}. Default 0,0,0."},
+			"scale":{"type":["array","object"],"description":"Scale [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}. Default 1,1,1."}},
 			"required":["class"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -181,7 +181,9 @@ void RegisterSceneTools(FEWRegistry& R)
 		TEXT("Move, rotate or scale an actor in the open editor level (one undo step). Give only the parts to change."),
 		TEXT(R"({"type":"object","properties":{
 			"actor":{"type":"string","description":"Label, name or path."},
-			"location":{},"rotation":{},"scale":{}},
+			"location":{"type":["array","object"],"description":"World position in cm, [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}."},
+			"rotation":{"type":["array","object"],"description":"Rotation in degrees, [pitch, yaw, roll] or {\"pitch\":..,\"yaw\":..,\"roll\":..}."},
+			"scale":{"type":["array","object"],"description":"Scale [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}."}},
 			"required":["actor"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -203,7 +205,7 @@ void RegisterSceneTools(FEWRegistry& R)
 
 	R.Register(TEXT("actor_delete"),
 		TEXT("Remove actors from the open editor level (one undo step). All must exist, otherwise nothing is removed."),
-		TEXT(R"({"type":"object","properties":{"actors":{"type":"array","items":{"type":"string"}}},"required":["actors"]})"),
+		TEXT(R"({"type":"object","properties":{"actors":{"type":"array","items":{"type":"string"},"description":"Labels, names or paths, e.g. [\"Stove\",\"BP_Door_C_2\"]."}},"required":["actors"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -226,7 +228,7 @@ void RegisterSceneTools(FEWRegistry& R)
 
 	R.Register(TEXT("actor_bounds"),
 		TEXT("Measure an actor: world bounds center and full size in cm (components included)."),
-		TEXT(R"({"type":"object","properties":{"actor":{"type":"string"},"collidingOnly":{"type":"boolean"}},"required":["actor"]})"),
+		TEXT(R"({"type":"object","properties":{"actor":{"type":"string","description":"Label, name or path."},"collidingOnly":{"type":"boolean","description":"Count colliding components only (default false)."}},"required":["actor"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -246,7 +248,9 @@ void RegisterSceneTools(FEWRegistry& R)
 
 	R.Register(TEXT("world_trace"),
 		TEXT("Cast a line through the open level (visibility channel) and report the first hit: actor, point and distance."),
-		TEXT(R"({"type":"object","properties":{"start":{},"end":{}},"required":["start","end"]})"),
+		TEXT(R"({"type":"object","properties":{
+			"start":{"type":["array","object"],"description":"World position in cm, [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}."},
+			"end":{"type":["array","object"],"description":"World position in cm, [x, y, z] or {\"x\":..,\"y\":..,\"z\":..}."}},"required":["start","end"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

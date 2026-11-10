@@ -70,7 +70,7 @@ void RegisterMeshTextureTools(FEWRegistry& R)
 {
 	R.Register(TEXT("mesh_info"),
 		TEXT("Describe a static or skeletal mesh without spawning an actor: local bounds (boundsMin, boundsMax, boundsCenter, size, in cm, mesh space with the pivot at the origin), where the pivot sits (pivotFromCenter, pivotFromBase = pivot minus the bottom center of the bounds, pivot = center / base / other), LODs with vertex and triangle counts, material slots, collision, Nanite; skeletal: bone count, skeleton, physics asset. Use it to size and place a mesh before you put it in a level."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Static or skeletal mesh asset path, e.g. /Game/Meshes/SM_Rock."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -124,9 +124,9 @@ void RegisterMeshTextureTools(FEWRegistry& R)
 	R.Register(TEXT("mesh_set_material"),
 		TEXT("Set the material of a mesh material slot (by slot name or index) on a static or skeletal mesh asset; read back and saved."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Static or skeletal mesh asset path, e.g. /Game/Meshes/SM_Rock."},
 			"slot":{"type":["string","integer"],"description":"Slot name or index."},
-			"material":{"type":"string"}},
+			"material":{"type":"string","description":"Material or material instance asset path, e.g. /Game/Materials/M_Rock."}},
 			"required":["path","slot","material"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -171,7 +171,7 @@ void RegisterMeshTextureTools(FEWRegistry& R)
 
 	R.Register(TEXT("texture_info"),
 		TEXT("Describe a texture: size, pixel format, compression, sRGB, LOD group, mip count, streaming. Change settings with object_set (e.g. CompressionSettings, SRGB, LODGroup)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Texture asset path, e.g. /Game/Textures/T_Rock."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

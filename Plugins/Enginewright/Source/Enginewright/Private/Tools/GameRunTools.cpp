@@ -1259,7 +1259,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 		});
 
 	Reg.RegisterAsync(TEXT("game_run_status"),
-		TEXT("Result of a game_run: waits up to 'wait' seconds for it to finish, then gives the same report as game_run (or STILL_RUNNING). stop true ends the running game now (its report says stopped). Without id: the latest run."),
+		TEXT("Result of a game_run: waits up to 'wait' seconds for it to finish, then gives the same report as game_run (or STILL_RUNNING). stop true ends the running game now (its report says stopped). Without id: the latest run. A run stopped with stop true answers RUN_NOT_PASSED with verdict STOPPED."),
 		TEXT(R"({"type":"object","properties":{
 			"id":{"type":"string","description":"Run id from game_run (default: the latest)."},
 			"wait":{"type":"number","description":"Seconds to wait for the result (default 0)."},

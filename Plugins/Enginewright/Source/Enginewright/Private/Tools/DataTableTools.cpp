@@ -94,7 +94,7 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_get"),
 		TEXT("Read a DataTable: its row struct, the row names, and the values of the rows asked for (or all rows when rows is omitted)."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
 			"rows":{"type":"array","items":{"type":"string"},"description":"Row names to read. Omit for all."},
 			"fields":{"type":"array","items":{"type":"string"},"description":"Field names to read. Omit for all."},
 			"namesOnly":{"type":"boolean","description":"Return only the row names and the field list."}},
@@ -144,7 +144,7 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_set_rows"),
 		TEXT("Add or update DataTable rows in one step: {rowName: {field: value}}. Fields are checked like object_set (unknown field, type, enum = error). Partial rows keep their other fields. If any row fails, nothing is written."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
 			"rows":{"type":"object","description":"Row name -> object of field values."},
 			"mode":{"type":"string","enum":["upsert","add","update"],"description":"upsert (default): add missing rows, update existing; add: fail if a row exists; update: fail if a row is missing."},
 			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
@@ -248,9 +248,9 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_remove_rows"),
 		TEXT("Remove DataTable rows. All names must exist, otherwise nothing is removed."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"rows":{"type":"array","items":{"type":"string"}},
-			"save":{"type":"boolean"}},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
+			"rows":{"type":"array","items":{"type":"string"},"description":"Row names to remove, e.g. [\"Sword\"]."},
+			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
 			"required":["path","rows"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -279,7 +279,10 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_rename_row"),
 		TEXT("Rename one DataTable row. Note: other assets that store the old name as an ID are not changed; search them with asset text search first."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"save":{"type":"boolean"}},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
+			"from":{"type":"string","description":"Current row name."},
+			"to":{"type":"string","description":"New row name."},
+			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
 			"required":["path","from","to"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult

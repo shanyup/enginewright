@@ -574,7 +574,7 @@ void RegisterPieTools(FEWRegistry& R)
 	R.Register(TEXT("screenshot"),
 		TEXT("Capture what a Play In Editor player sees, UI included (source game, the default while playing), or the level editor viewport (source editor). Saves a PNG under Saved/Enginewright/Screenshots and returns it as an image, with its mean brightness (warns when nearly black)."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string","enum":["game","editor"]},
+			"source":{"type":"string","enum":["game","editor"],"description":"game (default while playing) or editor."},
 			"player":{"type":"integer","description":"Local player for source game; default 0."},
 			"ui":{"type":"boolean","description":"Source game: include the UI drawn over the scene (UMG, CommonUI, HUD widgets). Default true; false = the 3D scene only. data.ui tells what the image shows."},
 			"maxWidth":{"type":"integer","description":"Downsize to this width; default 1280, 0 = full size."},
@@ -628,8 +628,8 @@ void RegisterPieTools(FEWRegistry& R)
 	R.RegisterAsync(TEXT("screenshot_ab"),
 		TEXT("Before/after picture in one call: capture a view (A), run steps (tool calls such as object_set or console_command) or one console command, wait, capture the same view again (B), and return both side by side with the share of pixels that changed."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string","enum":["game","editor"]},
-			"player":{"type":"integer"},
+			"source":{"type":"string","enum":["game","editor"],"description":"game (default while playing) or editor."},
+			"player":{"type":"integer","description":"Local player for source game; default 0."},
 			"steps":{"type":"array","items":{"type":"object"},"description":"[{tool, args}] run between the captures (tools that finish at once)."},
 			"command":{"type":"string","description":"A console command to run between the captures."},
 			"wait":{"type":"number","description":"Seconds between the change and capture B, default 0.5."},

@@ -163,8 +163,11 @@ void RegisterInputTools(FEWRegistry& R)
 	R.Register(TEXT("input_map"),
 		TEXT("Map a key to an input action in a mapping context, with optional modifiers (Negate, SwizzleAxis, DeadZone, Scalar...) and triggers (Pressed, Released, Hold, Tap...), each as a type name or {type, values}. Everything is checked before the context changes; the mapping is read back and saved."),
 		TEXT(R"({"type":"object","properties":{
-			"context":{"type":"string"},"action":{"type":"string"},"key":{"type":"string","description":"e.g. W, SpaceBar, Gamepad_LeftX"},
-			"modifiers":{"type":"array"},"triggers":{"type":"array"}},
+			"context":{"type":"string","description":"Input Mapping Context asset path, e.g. /Game/Input/IMC_Default."},
+			"action":{"type":"string","description":"Input action asset path, e.g. /Game/Input/IA_Jump."},
+			"key":{"type":"string","description":"Key name, e.g. W, SpaceBar, Gamepad_LeftX."},
+			"modifiers":{"type":"array","description":"Modifier type names or {type, values} objects, e.g. [\"Negate\"]."},
+			"triggers":{"type":"array","description":"Trigger type names or {type, values} objects, e.g. [\"Pressed\"]."}},
 			"required":["context","action","key"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -199,7 +202,11 @@ void RegisterInputTools(FEWRegistry& R)
 
 	R.Register(TEXT("input_unmap"),
 		TEXT("Remove a key from an action in a mapping context (or every key of the action when key is omitted)."),
-		TEXT(R"({"type":"object","properties":{"context":{"type":"string"},"action":{"type":"string"},"key":{"type":"string"}},"required":["context","action"]})"),
+		TEXT(R"({"type":"object","properties":{
+			"context":{"type":"string","description":"Input Mapping Context asset path, e.g. /Game/Input/IMC_Default."},
+			"action":{"type":"string","description":"Input action asset path, e.g. /Game/Input/IA_Jump."},
+			"key":{"type":"string","description":"Key name to remove, e.g. SpaceBar. Omit to remove every key of the action."}},
+			"required":["context","action"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -231,7 +238,7 @@ void RegisterInputTools(FEWRegistry& R)
 
 	R.Register(TEXT("input_context_info"),
 		TEXT("List the mappings of an Enhanced Input mapping context: action, key, modifiers, triggers."),
-		TEXT(R"({"type":"object","properties":{"context":{"type":"string"}},"required":["context"]})"),
+		TEXT(R"({"type":"object","properties":{"context":{"type":"string","description":"Input Mapping Context asset path, e.g. /Game/Input/IMC_Default."}},"required":["context"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

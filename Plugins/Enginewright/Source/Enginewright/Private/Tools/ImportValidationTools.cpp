@@ -236,7 +236,7 @@ void RegisterValidationTools(FEWRegistry& R)
 		TEXT("Check content for problems before they show up in play: checks blueprints (compile every Blueprint), data (Data Validation rules), references (assets that point to missing packages), map (Map Check of the open level). Default: all. Reports each problem; ok is false when any error is found."),
 		TEXT(R"({"type":"object","properties":{
 			"folder":{"type":"string","description":"Content folder to check, default /Game."},
-			"checks":{"type":"array","items":{"type":"string","enum":["blueprints","data","references","map"]}}}})"),
+			"checks":{"type":"array","items":{"type":"string","enum":["blueprints","data","references","map"]},"description":"Checks to run: blueprints, data, references, map. Default: all."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

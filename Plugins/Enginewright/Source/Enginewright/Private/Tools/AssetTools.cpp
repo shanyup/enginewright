@@ -261,7 +261,7 @@ void RegisterAssetTools(FEWRegistry& R)
 
 	R.Register(TEXT("asset_exists"),
 		TEXT("Check whether an asset exists. Correct during Play In Editor too."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Asset path, e.g. /Game/Items/BP_Apple (with or without the trailing .BP_Apple)."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -273,7 +273,7 @@ void RegisterAssetTools(FEWRegistry& R)
 	R.Register(TEXT("asset_references"),
 		TEXT("List what uses an asset (referencers) or what it uses (dependencies)."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Asset path, e.g. /Game/Items/BP_Apple."},
 			"direction":{"type":"string","enum":["referencers","dependencies"],"description":"Default referencers."}},
 			"required":["path"]})"),
 		false,
@@ -300,7 +300,7 @@ void RegisterAssetTools(FEWRegistry& R)
 	R.Register(TEXT("asset_duplicate"),
 		TEXT("Copy an asset to a new path and save the copy."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string"},
+			"source":{"type":"string","description":"Asset path, e.g. /Game/Items/BP_Apple."},
 			"destination":{"type":"string","description":"Full new path, e.g. /Game/Items/BP_Apple2."}},
 			"required":["source","destination"]})"),
 		true,
@@ -418,7 +418,7 @@ void RegisterAssetTools(FEWRegistry& R)
 			"Copies the engine keeps in memory (for example the transient re-instancing copies of an edited struct) do not block the delete. "
 			"force true skips the reference check: it closes the editors of the referencing assets, deletes the placed instances of a deleted Blueprint, nulls the references inside loaded assets (they become unsaved, Enginewright does not save them) and leaves references in assets that are not loaded dangling until those are opened and saved. It does not free an asset that something else still holds in memory: that ends in DELETE_INCOMPLETE with the reason."),
 		TEXT(R"({"type":"object","properties":{
-			"paths":{"type":"array","items":{"type":"string"}},
+			"paths":{"type":"array","items":{"type":"string"},"description":"Asset paths, e.g. [\"/Game/Items/BP_Apple\"]."},
 			"force":{"type":"boolean","description":"Delete even when referenced (default false)."}},
 			"required":["paths"]})"),
 		true,
@@ -584,7 +584,7 @@ void RegisterAssetTools(FEWRegistry& R)
 
 	R.Register(TEXT("asset_save"),
 		TEXT("Save assets by path, or every unsaved asset and level when paths is empty."),
-		TEXT(R"({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}}})"),
+		TEXT(R"({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"},"description":"Asset paths to save, e.g. [\"/Game/Items/BP_Apple\"]. Empty or omitted saves every unsaved asset and level."}}})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
