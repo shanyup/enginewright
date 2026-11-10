@@ -19,6 +19,8 @@ void RegisterObjectTools(FEWRegistry& R);
 void RegisterAssetTools(FEWRegistry& R);
 void RegisterDataTableTools(FEWRegistry& R);
 void RegisterSceneTools(FEWRegistry& R);
+void RegisterSceneDressTools(FEWRegistry& R);
+void RegisterActorPreviewTools(FEWRegistry& R);
 void RegisterSettingsLogTools(FEWRegistry& R);
 void RegisterBatchTool(FEWRegistry& R);
 void RegisterClientTools(FEWRegistry& R);
@@ -148,6 +150,8 @@ void FEnginewrightModule::StartupModule()
 	RegisterGameplayTagTools(Reg);
 	Reg.SetCategory(TEXT("Level"));
 	RegisterSceneTools(Reg);
+	RegisterSceneDressTools(Reg);
+	RegisterActorPreviewTools(Reg);
 	RegisterMeasureTools(Reg);
 	Reg.SetCategory(TEXT("Blueprints"));
 	RegisterBlueprintTools(Reg);

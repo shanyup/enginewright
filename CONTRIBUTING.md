@@ -26,14 +26,15 @@ You need Unreal Engine 5.8 on Windows (the only tested platform so far), a Visua
 4. Enable the **CommonUI** plugin in the test project (Edit > Plugins), for the CommonUI checks of the `ui` suite.
 5. Optional, for the C++ widget check of the `umg` suite: copy `tests/fixtures/EWTestNativeWidget.h` and `.cpp` into the test project's module folder (`Source/<Module>/`) and add `"UMG", "Slate", "SlateCore"` to that module's `Build.cs` dependencies. The test looks for `/Script/EnginewrightTest.EWTestNativeWidget`; if your module has another name, change the path in `tests/test_umg.py` locally.
 6. Optional, for the `mvvm` suite: copy `tests/fixtures/EWTestViewModel.h` and `.cpp` into the same module, add `"ModelViewViewModel"` and `"FieldNotification"` to its `Build.cs` dependencies, copy `Plugins/EnginewrightMVVM` next to `Plugins/Enginewright` and enable `ModelViewViewModel` and `EnginewrightMVVM` in the `.uproject`. Without them the suite only checks that the tools answer `MVVM_NOT_ENABLED`.
-7. Build the editor target with the editor closed, either by opening the `.uproject` and accepting the rebuild prompt, or from a shell:
+7. Optional, for the preview checks of the `scene` suite: copy `tests/fixtures/EWTestDressActor.h` and `.cpp` into the same module (no extra dependencies). The test looks for `/Script/EnginewrightTest.EWTestDressActor`; without it the `actor_preview` checks that run BeginPlay fail with a message that says so.
+8. Build the editor target with the editor closed, either by opening the `.uproject` and accepting the rebuild prompt, or from a shell:
 
    ```bat
    "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" EWTestEditor Win64 Development -Project="D:\Projects\EWTest\EWTest.uproject" -WaitMutex
    ```
 
    `Plugins/Enginewright/Scripts/ewtool.py build --project <uproject>` does the same and also waits for locked DLLs (see [docs/EWTOOL.md](docs/EWTOOL.md)).
-8. Open the test project. The Output Log prints `Enginewright: MCP server on http://127.0.0.1:3100/mcp (… tools)`.
+9. Open the test project. The Output Log prints `Enginewright: MCP server on http://127.0.0.1:3100/mcp (… tools)`.
 
 The editor locks the plugin DLL. After a C++ change, close the editor and build again, or call `editor_restart` with `{"build": true}` from your agent. Live Coding is fine for quick edits in `.cpp` files, but header changes need a full build.
 
