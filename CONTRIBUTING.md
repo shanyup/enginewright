@@ -9,6 +9,15 @@ Ways to help:
 - **Pick a [good first issue](https://github.com/shanyup/enginewright/labels/good%20first%20issue).** Each one names the files to touch, the test to extend and when it is done.
 - **Send a pull request.** For a new tool, open a request first so we agree on the name and arguments before you write code.
 
+## How a request gets onto the roadmap
+
+1. Open a Tool request (your AI agent can fill it in, see [docs/REQUEST_WITH_AI.md](docs/REQUEST_WITH_AI.md)). It gets the `request` label.
+2. The maintainer answers within the issue: questions get `needs-info`; an accepted request gets `accepted` and `roadmap` and a target version in [docs/ROADMAP.md](docs/ROADMAP.md) "Requests".
+3. It is built on the `dev` branch (or by your pull request, see below) and ships in that version; the release notes link the issue.
+4. Requests that do not fit stay open as ideas and can move later.
+
+Not sure yet, or just a question? Start in [GitHub Discussions](https://github.com/shanyup/enginewright/discussions) (Ideas or Q&A). A discussed idea can become a Tool request later.
+
 ## Development setup
 
 You need Unreal Engine 5.8 on Windows (the only tested platform so far), a Visual Studio version that UE 5.8 supports, with the C++ game development workload (the maintainer builds with Visual Studio 2026), Git, and Python 3 for the tests (standard library only).
@@ -25,14 +34,16 @@ You need Unreal Engine 5.8 on Windows (the only tested platform so far), a Visua
    (Copying the folder works too, but then you have to copy again after every change.)
 4. Enable the **CommonUI** plugin in the test project (Edit > Plugins), for the CommonUI checks of the `ui` suite.
 5. Optional, for the C++ widget check of the `umg` suite: copy `tests/fixtures/EWTestNativeWidget.h` and `.cpp` into the test project's module folder (`Source/<Module>/`) and add `"UMG", "Slate", "SlateCore"` to that module's `Build.cs` dependencies. The test looks for `/Script/EnginewrightTest.EWTestNativeWidget`; if your module has another name, change the path in `tests/test_umg.py` locally.
-6. Build the editor target with the editor closed, either by opening the `.uproject` and accepting the rebuild prompt, or from a shell:
+6. Optional, for the `mvvm` suite: copy `tests/fixtures/EWTestViewModel.h` and `.cpp` into the same module, add `"ModelViewViewModel"` and `"FieldNotification"` to its `Build.cs` dependencies, copy `Plugins/EnginewrightMVVM` next to `Plugins/Enginewright` and enable `ModelViewViewModel` and `EnginewrightMVVM` in the `.uproject`. Without them the suite only checks that the tools answer `MVVM_NOT_ENABLED`.
+7. Optional, for the preview checks of the `scene` suite: copy `tests/fixtures/EWTestDressActor.h` and `.cpp` into the same module (no extra dependencies). The test looks for `/Script/EnginewrightTest.EWTestDressActor`; without it the `actor_preview` checks that run BeginPlay fail with a message that says so.
+8. Build the editor target with the editor closed, either by opening the `.uproject` and accepting the rebuild prompt, or from a shell:
 
    ```bat
    "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" EWTestEditor Win64 Development -Project="D:\Projects\EWTest\EWTest.uproject" -WaitMutex
    ```
 
    `Plugins/Enginewright/Scripts/ewtool.py build --project <uproject>` does the same and also waits for locked DLLs (see [docs/EWTOOL.md](docs/EWTOOL.md)).
-7. Open the test project. The Output Log prints `Enginewright: MCP server on http://127.0.0.1:3100/mcp (… tools)`.
+9. Open the test project. The Output Log prints `Enginewright: MCP server on http://127.0.0.1:3100/mcp (… tools)`.
 
 The editor locks the plugin DLL. After a C++ change, close the editor and build again, or call `editor_restart` with `{"build": true}` from your agent. Live Coding is fine for quick edits in `.cpp` files, but header changes need a full build.
 
@@ -45,6 +56,7 @@ The editor locks the plugin DLL. After a C++ change, close the editor and build 
 | `Private/EWRegistry.cpp` | The shared checks for every call: unknown arguments, types, enums, required arguments, the Play In Editor gate, undo transactions. |
 | `Private/EWCommon.h`, `EWProps.h`, `EWTypes.h` | Helpers: argument readers (`EW::Str`, `EW::Num`, `EW::Bool`, `EW::StrList`), asset and class lookup (`EW::LoadAs`, `EW::FindClass`, `EW::Suggest`), property writing with read-back (`EW::WriteValues`), log capture, PNG encoding. |
 | `Private/EWEditorUI.cpp`, `Public/EnginewrightSettings.h` | The status bar indicator, the Enginewright panel (Tools > Enginewright) and the settings behind them (Project Settings > Plugins > Enginewright). |
+| `Plugins/EnginewrightMVVM/` | The optional second plugin with the code that touches Epic's MVVM plugin (the `viewmodel_*` operations). The tools, schemas and descriptions stay in `Plugins/Enginewright/.../Tools/MVVMTools.cpp`; this plugin registers its operations through `FEWMVVMBackend`, so the main module has no dependency on MVVM. |
 | `Plugins/Enginewright/Scripts/ewtool.py` | Optional build helper for when the editor is closed. |
 | `tests/` | Python test suites, one file per area (`test_<suite>.py`), run against a live editor. |
 | `tools/package.py` | Builds the release zip. |

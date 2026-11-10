@@ -8,6 +8,8 @@
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Components/ActorComponent.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Factories/BlueprintFactory.h"
@@ -27,6 +29,7 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -262,6 +265,91 @@ namespace
 	FEWResult Bad(const FString& Code, const FString& Msg) { return FEWResult::Error(Code, Msg); }
 }
 
+namespace
+{
+	/** A component the Blueprint does not add itself: from the C++ parent class (a default subobject) or from a parent Blueprint. */
+	struct FInheritedComp
+	{
+		FString Name;
+		FString Alias;      // native property that points to it (Mesh for CharacterMesh0)
+		UActorComponent* Template = nullptr;
+		FString Source;     // "native" or "blueprint:<name>"
+		USCS_Node* Node = nullptr; // set for parent Blueprint components
+	};
+
+	TArray<FInheritedComp> InheritedComponents(UBlueprint* BP)
+	{
+		TArray<FInheritedComp> Out;
+		UBlueprintGeneratedClass* Own = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+		for (UClass* C = BP->ParentClass; C; C = C->GetSuperClass())
+		{
+			UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(C);
+			if (!BPGC) { break; }
+			if (!BPGC->SimpleConstructionScript) { continue; }
+			for (USCS_Node* N : BPGC->SimpleConstructionScript->GetAllNodes())
+			{
+				if (!N || !N->ComponentClass) { continue; }
+				FInheritedComp I;
+				I.Name = N->GetVariableName().ToString();
+				I.Node = N;
+				I.Template = Own ? N->GetActualComponentTemplate(Own) : N->ComponentTemplate.Get();
+				I.Source = TEXT("blueprint:") + (BPGC->ClassGeneratedBy ? BPGC->ClassGeneratedBy->GetName() : BPGC->GetName());
+				Out.Add(I);
+			}
+		}
+		if (BP->GeneratedClass && BP->ParentClass)
+		{
+			if (AActor* CDO = Cast<AActor>(BP->GeneratedClass->GetDefaultObject()))
+			{
+				TInlineComponentArray<UActorComponent*> Comps;
+				CDO->GetComponents(Comps);
+				for (UActorComponent* Comp : Comps)
+				{
+					if (!Comp || Comp->GetOuter() != CDO) { continue; }
+					FInheritedComp I;
+					I.Name = Comp->GetName();
+					I.Template = Comp;
+					I.Source = TEXT("native");
+					for (TFieldIterator<FObjectProperty> It(BP->ParentClass); It; ++It)
+					{
+						if (It->PropertyClass && It->PropertyClass->IsChildOf(UActorComponent::StaticClass()) && It->GetObjectPropertyValue_InContainer(CDO) == Comp) { I.Alias = It->GetName(); break; }
+					}
+					Out.Add(I);
+				}
+			}
+		}
+		return Out;
+	}
+
+	/** Own SCS component first, then an inherited one (by component name or native property name). */
+	UActorComponent* FindComponentTemplate(UBlueprint* BP, const FString& Name, FString& OutSource, USCS_Node*& OutParentNode)
+	{
+		OutParentNode = nullptr;
+		if (USCS_Node* N = FindScsNode(BP, Name)) { OutSource = TEXT("blueprint"); return N->ComponentTemplate; }
+		for (const FInheritedComp& I : InheritedComponents(BP))
+		{
+			if (I.Name.Equals(Name, ESearchCase::IgnoreCase) || (!I.Alias.IsEmpty() && I.Alias.Equals(Name, ESearchCase::IgnoreCase)))
+			{
+				OutSource = I.Source;
+				OutParentNode = I.Node;
+				return I.Template;
+			}
+		}
+		return nullptr;
+	}
+
+	TArray<FString> AllComponentNames(UBlueprint* BP)
+	{
+		TArray<FString> Out = ScsNames(BP);
+		for (const FInheritedComp& I : InheritedComponents(BP))
+		{
+			Out.AddUnique(I.Name);
+			if (!I.Alias.IsEmpty()) { Out.AddUnique(I.Alias); }
+		}
+		return Out;
+	}
+}
+
 void RegisterBlueprintTools(FEWRegistry& R)
 {
 	R.Register(TEXT("blueprint_create"),
@@ -300,8 +388,8 @@ void RegisterBlueprintTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("blueprint_info"),
-		TEXT("Describe a Blueprint: parent class, compile status, variables (type, default, category), components, graphs and functions."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"),
+		TEXT("Describe a Blueprint: parent class, compile status, variables (type, default, category), components added by the Blueprint (components), components inherited from the C++ parent or a parent Blueprint (inheritedComponents: name, native property, class, source, template path), graphs and functions. Change component defaults with blueprint_set_component_defaults."),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -332,6 +420,18 @@ void RegisterBlueprintTools(FEWRegistry& R)
 				}
 			}
 			Data->SetArrayField(TEXT("components"), Comps);
+			TArray<TSharedPtr<FJsonValue>> Inherited;
+			for (const FInheritedComp& I : InheritedComponents(BP))
+			{
+				TSharedRef<FJsonObject> C = MakeShared<FJsonObject>();
+				C->SetStringField(TEXT("name"), I.Name);
+				if (!I.Alias.IsEmpty()) { C->SetStringField(TEXT("property"), I.Alias); }
+				C->SetStringField(TEXT("class"), I.Template ? I.Template->GetClass()->GetName() : FString());
+				C->SetStringField(TEXT("source"), I.Source);
+				if (I.Template) { C->SetStringField(TEXT("template"), I.Template->GetPathName()); }
+				Inherited.Add(MakeShared<FJsonValueObject>(C));
+			}
+			Data->SetArrayField(TEXT("inheritedComponents"), Inherited);
 			TArray<UEdGraph*> Graphs;
 			BP->GetAllGraphs(Graphs);
 			TArray<TSharedPtr<FJsonValue>> GraphList;
@@ -350,7 +450,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_compile"),
 		TEXT("Compile Blueprints and report errors and warnings per Blueprint. Pass paths, or a folder to compile every Blueprint under it."),
 		TEXT(R"({"type":"object","properties":{
-			"paths":{"type":"array","items":{"type":"string"}},
+			"paths":{"type":"array","items":{"type":"string"},"description":"Blueprint asset paths, e.g. [\"/Game/Blueprints/BP_Door\"]. Use folder for a whole folder."},
 			"folder":{"type":"string","description":"Compile all Blueprints under this folder, e.g. /Game."},
 			"save":{"type":"boolean","description":"Save after a clean compile (default false)."}}})"),
 		true,
@@ -390,7 +490,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_variables"),
 		TEXT("Add member variables to a Blueprint: [{name, type, default, category, instanceEditable}]. All are checked first (name clash, type); then added, compiled, read back from the class defaults, and saved."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
 			"variables":{"type":"array","items":{"type":"object"},"description":"type uses the struct_create type strings; default is the value as text (e.g. '1.5', 'true', '(X=1,Y=2,Z=3)')."}},
 			"required":["path","variables"]})"),
 		true,
@@ -477,7 +577,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_remove_variables"),
 		TEXT("Remove member variables from a Blueprint (and the nodes that use them), compile and save."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"names":{"type":"array","items":{"type":"string"}}},"required":["path","names"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"names":{"type":"array","items":{"type":"string"},"description":"Variable names to remove, e.g. [\"Health\"]."}},"required":["path","names"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -503,7 +603,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_component"),
 		TEXT("Add a component to an Actor Blueprint (e.g. StaticMeshComponent, PointLightComponent), optionally under a parent component and with property values checked like object_set; compile and save."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
 			"class":{"type":"string","description":"Component class, e.g. StaticMeshComponent."},
 			"name":{"type":"string","description":"Component name (variable name)."},
 			"parent":{"type":"string","description":"Parent scene component name; default is the root."},
@@ -563,9 +663,80 @@ void RegisterBlueprintTools(FEWRegistry& R)
 			return Res;
 		}, /*bTransactional*/ false);
 
+	R.Register(TEXT("blueprint_set_component_defaults"),
+		TEXT("Write the default values of a component of an Actor Blueprint, whichever way it got there: added by this Blueprint (blueprint_add_component), inherited from the C++ parent class "
+			"(Character's Mesh / CharacterMesh0, CapsuleComponent, CharacterMovement; StaticMeshActor's StaticMeshComponent) or inherited from a parent Blueprint. blueprint_info lists them under inheritedComponents; "
+			"name the component or its native property name. Values are checked like object_set (unknown property, wrong type or enum = error with suggestions, all validated before anything is written), "
+			"then the Blueprint is compiled and saved and the values are read back after the compile. One undo step for the write. For a parent Blueprint's component the change is stored as an override in this Blueprint, not in the parent."),
+		TEXT(R"({"type":"object","properties":{
+			"path":{"type":"string","description":"Blueprint path, e.g. /Game/Characters/BP_Hero."},
+			"component":{"type":"string","description":"Component name, e.g. CharacterMesh0, or its native property name, e.g. Mesh; see blueprint_info."},
+			"values":{"type":"object","description":"Property name -> new value for the component, e.g. {\"RelativeLocation\":{\"X\":0,\"Y\":0,\"Z\":-90},\"SkeletalMeshAsset\":\"/Game/Meshes/SK_Hero\"}."}},
+			"required":["path","component","values"]})"),
+		true,
+		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
+		{
+			FEWResult Err;
+			UBlueprint* BP = LoadBP(Args, Err);
+			if (!BP) { return Err; }
+			if (!BP->GeneratedClass || !BP->GeneratedClass->IsChildOf(AActor::StaticClass())) { return Bad(TEXT("NOT_ACTOR_BLUEPRINT"), TEXT("Only compiled Actor Blueprints have components. Compile it with blueprint_compile first.")); }
+			const FString Name = EW::Str(Args, TEXT("component"));
+			const TSharedPtr<FJsonObject>* Values = nullptr;
+			if (!Args->TryGetObjectField(TEXT("values"), Values) || !Values->IsValid()) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("values must be an object.")); }
+
+			FString Source;
+			USCS_Node* ParentNode = nullptr;
+			UActorComponent* Template = FindComponentTemplate(BP, Name, Source, ParentNode);
+			if (!Template) { return FEWResult::Error(TEXT("UNKNOWN_COMPONENT"), FString::Printf(TEXT("No component '%s' in this Blueprint (own or inherited). See inheritedComponents in blueprint_info."), *Name), EW::Suggest(Name, AllComponentNames(BP))); }
+
+			TOptional<FScopedTransaction> Tx;
+			Tx.Emplace(FText::FromString(TEXT("Enginewright blueprint_set_component_defaults")));
+			BP->Modify();
+			if (ParentNode)
+			{
+				// A component of a parent Blueprint is changed through an override stored in this Blueprint.
+				UInheritableComponentHandler* ICH = BP->GetInheritableComponentHandler(true);
+				const FComponentKey Key(ParentNode);
+				UActorComponent* Override = ICH ? ICH->GetOverridenComponentTemplate(Key) : nullptr;
+				if (!Override && ICH) { Override = ICH->CreateOverridenComponentTemplate(Key); }
+				if (!Override) { EW::CancelUnlessBatch(*Tx); return Bad(TEXT("OVERRIDE_FAILED"), TEXT("The editor could not create an override of the parent Blueprint's component.")); }
+				Template = Override;
+			}
+			FEWResult W = EW::WriteValues(Template->GetClass(), Template, Template, *Values);
+			if (!W.bOk)
+			{
+				EW::CancelUnlessBatch(*Tx);
+				return W;
+			}
+			FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+			Tx.Reset(); // close the undo step before the compile re-creates the class default object
+
+			if (!W.Data.IsValid()) { W.Data = MakeShared<FJsonObject>(); }
+			W.Data->SetStringField(TEXT("component"), Name);
+			W.Data->SetStringField(TEXT("source"), Source);
+			FEWResult Res = Finish(BP, W);
+
+			// Read back from the compiled Blueprint (the class default object is a new object after the compile).
+			FString Source2;
+			USCS_Node* Node2 = nullptr;
+			UActorComponent* After = FindComponentTemplate(BP, Name, Source2, Node2);
+			if (After && Node2 && BP->GetInheritableComponentHandler(false))
+			{
+				if (UActorComponent* O = BP->GetInheritableComponentHandler(false)->GetOverridenComponentTemplate(FComponentKey(Node2))) { After = O; }
+			}
+			if (!After) { Res.bOk = false; Res.ErrorCode = TEXT("READBACK_MISMATCH"); Res.Message = TEXT("The component is missing after the compile."); return Res; }
+			TArray<FString> Keys;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& KV : (*Values)->Values) { Keys.Add(KV.Key); }
+			TSharedPtr<FJsonObject> Back;
+			FEWResult R2 = EW::ReadValues(After->GetClass(), After, Keys, Back);
+			if (R2.bOk && Back.IsValid()) { Res.Data->SetObjectField(TEXT("values"), Back); }
+			Res.Data->SetStringField(TEXT("template"), After->GetPathName());
+			return Res;
+		});
+
 	R.Register(TEXT("blueprint_remove_component"),
 		TEXT("Remove a component added in this Blueprint (children move up to its parent), compile and save."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path","name"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"name":{"type":"string","description":"Component name (variable name), e.g. StaticMeshComponent1."}},"required":["path","name"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -582,7 +753,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_graph_read"),
 		TEXT("Read a Blueprint graph: nodes (id, class, title, position) and their pins (name, direction, type, default, links as nodeId.pin)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"graph":{"type":"string","description":"Graph name, default EventGraph."}},"required":["path"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"graph":{"type":"string","description":"Graph name, default EventGraph."}},"required":["path"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
@@ -603,9 +774,9 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_add_node"),
 		TEXT("Add a node to a Blueprint graph. kind: event (BeginPlay, Tick or any overridable event), custom_event, call (a function: PrintString, Class.Function, or a function of this Blueprint), get / set (a variable), branch. Returns the node id and pins; wire it with blueprint_connect."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"graph":{"type":"string","description":"Default EventGraph."},
-			"kind":{"type":"string","enum":["event","custom_event","call","get","set","branch"]},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
+			"kind":{"type":"string","enum":["event","custom_event","call","get","set","branch"],"description":"Node kind: event, custom_event, call, get, set or branch."},
 			"name":{"type":"string","description":"Event, function or variable name (not needed for branch)."},
 			"position":{"type":"array","items":{"type":"number"},"description":"[x, y]"}},
 			"required":["path","kind"]})"),
@@ -724,8 +895,8 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_connect"),
 		TEXT("Connect two pins in a Blueprint graph: from an output pin to an input pin, each as nodeId.pin (pin names from blueprint_graph_read; aliases exec/then and #index work). The connection is checked by the graph schema and read back."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"graph":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
 			"from":{"type":"string","description":"Output pin, e.g. 3F2A9C10B4D1.then"},
 			"to":{"type":"string","description":"Input pin, e.g. 77AB12CD9E00.InString"}},
 			"required":["path","from","to"]})"),
@@ -773,9 +944,10 @@ void RegisterBlueprintTools(FEWRegistry& R)
 	R.Register(TEXT("blueprint_set_pin"),
 		TEXT("Set the default value of an unconnected input pin (text form, e.g. 'Hello', '2.5', 'true', '(X=1,Y=0,Z=0)' or an asset path for object pins). The schema checks the value and it is read back."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"graph":{"type":"string"},
+			"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},
+			"graph":{"type":"string","description":"Graph name, default EventGraph."},
 			"pin":{"type":"string","description":"nodeId.pin"},
-			"value":{"type":"string"}},
+			"value":{"type":"string","description":"New default value as text, e.g. Hello, 2.5, true, (X=1,Y=0,Z=0), or an asset path for object pins."}},
 			"required":["path","pin","value"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -825,7 +997,7 @@ void RegisterBlueprintTools(FEWRegistry& R)
 
 	R.Register(TEXT("blueprint_remove_node"),
 		TEXT("Remove a node from a Blueprint graph (its links are broken)."),
-		TEXT(R"({"type":"object","properties":{"path":{"type":"string"},"graph":{"type":"string"},"node":{"type":"string"}},"required":["path","node"]})"),
+		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Blueprint asset path, e.g. /Game/Blueprints/BP_Door."},"graph":{"type":"string","description":"Graph name, default EventGraph."},"node":{"type":"string","description":"Node id from blueprint_graph_read, e.g. 3F2A9C10B4D1."}},"required":["path","node"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{

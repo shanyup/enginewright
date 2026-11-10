@@ -19,6 +19,8 @@ void RegisterObjectTools(FEWRegistry& R);
 void RegisterAssetTools(FEWRegistry& R);
 void RegisterDataTableTools(FEWRegistry& R);
 void RegisterSceneTools(FEWRegistry& R);
+void RegisterSceneDressTools(FEWRegistry& R);
+void RegisterActorPreviewTools(FEWRegistry& R);
 void RegisterSettingsLogTools(FEWRegistry& R);
 void RegisterBatchTool(FEWRegistry& R);
 void RegisterClientTools(FEWRegistry& R);
@@ -37,8 +39,12 @@ void RegisterMeasureTools(FEWRegistry& R);
 void RegisterUMGTools(FEWRegistry& R);
 void RegisterGameplayTagTools(FEWRegistry& R);
 void RegisterUIRuntimeTools(FEWRegistry& R);
+void RegisterMVVMTools(FEWRegistry& R);
 void RegisterLocalizationTools(FEWRegistry& R);
+void RegisterLocGatherTools(FEWRegistry& R);
+void EWStopLocRuns();
 void RegisterGameRunTools(FEWRegistry& R);
+void RegisterSaveGameTools(FEWRegistry& R);
 void RegisterImageTools(FEWRegistry& R);
 void RegisterEditorUITools(FEWRegistry& R);
 void EWStopGameRuns();
@@ -144,6 +150,8 @@ void FEnginewrightModule::StartupModule()
 	RegisterGameplayTagTools(Reg);
 	Reg.SetCategory(TEXT("Level"));
 	RegisterSceneTools(Reg);
+	RegisterSceneDressTools(Reg);
+	RegisterActorPreviewTools(Reg);
 	RegisterMeasureTools(Reg);
 	Reg.SetCategory(TEXT("Blueprints"));
 	RegisterBlueprintTools(Reg);
@@ -153,6 +161,7 @@ void FEnginewrightModule::StartupModule()
 	RegisterPieTools(Reg);
 	RegisterInputTools(Reg);
 	RegisterGameRunTools(Reg);
+	RegisterSaveGameTools(Reg);
 	Reg.SetCategory(TEXT("Multiplayer"));
 	RegisterMultiplayerTools(Reg);
 	Reg.SetCategory(TEXT("Build"));
@@ -163,8 +172,10 @@ void FEnginewrightModule::StartupModule()
 	Reg.SetCategory(TEXT("UI"));
 	RegisterUMGTools(Reg);
 	RegisterUIRuntimeTools(Reg);
+	RegisterMVVMTools(Reg);
 	Reg.SetCategory(TEXT("Localization"));
 	RegisterLocalizationTools(Reg);
+	RegisterLocGatherTools(Reg);
 	Reg.SetCategory(TEXT("Images"));
 	RegisterImageTools(Reg);
 	Reg.SetCategory(TEXT("Editor"));
@@ -179,7 +190,13 @@ void FEnginewrightModule::StartupModule()
 	}
 	Token = Token.TrimStartAndEnd();
 
-	if (GetDefault<UEnginewrightSettings>()->bServerEnabled)
+	if (IsRunningCommandlet())
+	{
+		// A commandlet (GatherText, cook, ...) running next to an open editor would try the editor's port and fail with exit code 1.
+		Port = WantedPort();
+		UE_LOG(LogTemp, Display, TEXT("Enginewright: running as a commandlet; the MCP server is not started."));
+	}
+	else if (GetDefault<UEnginewrightSettings>()->bServerEnabled)
 	{
 		StartServer();
 	}
@@ -246,6 +263,7 @@ void FEnginewrightModule::StopServer()
 
 void FEnginewrightModule::ApplySettings()
 {
+	if (IsRunningCommandlet()) { return; }
 	if (!GetDefault<UEnginewrightSettings>()->bServerEnabled)
 	{
 		if (Router.IsValid())
@@ -289,6 +307,7 @@ void FEnginewrightModule::ShutdownModule()
 	EWUI::Unregister();
 	UEnginewrightSettings::OnChanged().Remove(SettingsChangedHandle);
 	EWStopGameRuns();
+	EWStopLocRuns();
 	StopServer();
 	EW::RemoveLogCapture();
 }

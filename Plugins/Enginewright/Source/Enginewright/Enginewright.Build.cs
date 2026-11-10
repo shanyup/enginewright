@@ -18,8 +18,8 @@ public class Enginewright : ModuleRules
 			"UnrealEd", "Projects", "Slate", "SlateCore", "AssetRegistry", "AssetTools", "DeveloperSettings",
 			"BlueprintGraph", "Kismet", "KismetCompiler", "GraphEditor", "ImageWrapper", "InputCore", "EnhancedInput",
 			"MaterialEditor", "LevelEditor", "EditorSubsystem", "DataValidation", "RenderCore", "RHI", "PhysicsCore",
-			"UMG", "UMGEditor", "GameplayTags", "GameplayTagsEditor",
-			"ToolMenus", "WorkspaceMenuStructure", "Settings", "ApplicationCore"
+			"UMG", "UMGEditor", "GameplayTags", "GameplayTagsEditor", "NavigationSystem",
+			"ToolMenus", "WorkspaceMenuStructure", "Settings", "ApplicationCore", "MeshDescription", "StaticMeshDescription"
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)

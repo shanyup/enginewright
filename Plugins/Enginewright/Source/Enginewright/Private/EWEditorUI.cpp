@@ -9,6 +9,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "Containers/Ticker.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformProcess.h"
 #include "ImageUtils.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
@@ -177,6 +178,44 @@ namespace
 		void Construct(const FArguments&)
 		{
 			TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+
+			// Version and docs
+			Body->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+					.Text(FText::FromString(FString::Printf(TEXT("Enginewright %s"), ENGINEWRIGHT_VERSION)))
+				]
+				+ SHorizontalBox::Slot().FillWidth(1.f)
+				[
+					SNew(SBox)
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("What's new / Roadmap")))
+					.ToolTipText(FText::FromString(TEXT("Opens the roadmap on GitHub (planned versions, requests, release notes).")))
+					.OnClicked_Lambda([]()
+					{
+						FPlatformProcess::LaunchURL(TEXT("https://github.com/shanyup/enginewright/blob/main/docs/ROADMAP.md"), nullptr, nullptr);
+						return FReply::Handled();
+					})
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4, 0, 0, 0)
+				[
+					SNew(SButton)
+					.Text(FText::FromString(TEXT("Changelog")))
+					.ToolTipText(FText::FromString(TEXT("Opens CHANGELOG.md on GitHub.")))
+					.OnClicked_Lambda([]()
+					{
+						FPlatformProcess::LaunchURL(TEXT("https://github.com/shanyup/enginewright/blob/main/CHANGELOG.md"), nullptr, nullptr);
+						return FReply::Handled();
+					})
+				]
+			];
 
 			// Server
 			Body->AddSlot().AutoHeight()[Heading(TEXT("Server"))];

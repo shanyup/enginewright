@@ -111,4 +111,68 @@ check("remove variable", r["ok"] and not any(v["name"] == "Labels" for v in info
 r = c("blueprint_compile", {"folder": ROOT})
 check("compile whole test folder", r["ok"] and r["data"]["compiled"] >= 2, r)
 
+# --- ER-18: defaults of inherited and own components (C++ parent, parent Blueprint, own component)
+H, HC = ROOT + "/BP_EWHero", ROOT + "/BP_EWHeroChild"
+delete_if_exists(HC, H)
+r = c("blueprint_create", {"path": H, "parent": "Character"})
+check("blueprint_create with a Character parent", r["ok"], r)
+info = c("blueprint_info", {"path": H})["data"]
+inh = {x["name"]: x for x in info["inheritedComponents"]}
+check("blueprint_info lists the components inherited from the C++ parent (CharacterMesh0 = Mesh, CollisionCylinder = CapsuleComponent, movement)",
+      "CharacterMesh0" in inh and inh["CharacterMesh0"].get("property") == "Mesh" and inh["CharacterMesh0"]["class"] == "SkeletalMeshComponent"
+      and inh["CharacterMesh0"]["source"] == "native" and "CollisionCylinder" in inh and inh["CollisionCylinder"].get("property") == "CapsuleComponent" and "CharMoveComp" in inh, info["inheritedComponents"])
+
+
+def mesh_values(bp, comp="CharacterMesh0", names=("RelativeLocation", "RelativeScale3D")):
+    return c("object_get", {"path": f"{bp}.Default__{bp.rsplit('/', 1)[1]}_C:{comp}", "properties": list(names)})["data"]["properties"]
+
+
+before = mesh_values(H)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "Mesh", "values": {"RelativeLocation": {"X": 0, "Y": 0, "Z": -77}, "RelativeScale3D": {"X": 2, "Y": 2, "Z": 2}}})
+back = (r.get("data") or {}).get("values", {})
+check("set the defaults of the inherited Mesh component (by its native property name): read back after the compile, saved",
+      r["ok"] and r["data"]["saved"] and back.get("RelativeLocation", {}).get("z") == -77 and back.get("RelativeScale3D", {}).get("x") == 2, r)
+now = mesh_values(H)
+check("the class default object really holds the new values (object_get on Default__BP_EWHero_C:CharacterMesh0)",
+      now["RelativeLocation"]["z"] == -77 and now["RelativeScale3D"]["y"] == 2 and before["RelativeLocation"]["z"] != -77, [before, now])
+r = c("blueprint_compile", {"paths": [H]})
+check("the values survive another compile (the class default object is rebuilt)", r["ok"] and mesh_values(H)["RelativeLocation"]["z"] == -77, r)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "CharacterMesh0", "values": {"RelativeLocation": {"X": 0, "Y": 0, "Z": -60}}})
+check("same component by its real name", r["ok"] and mesh_values(H)["RelativeLocation"]["z"] == -60, r)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "Meshh", "values": {"RelativeLocation": {"X": 1, "Y": 1, "Z": 1}}})
+check("unknown component -> UNKNOWN_COMPONENT with suggestions", not r["ok"] and r["errorCode"] == "UNKNOWN_COMPONENT" and any(x in r.get("suggestions", []) for x in ("Mesh", "CharacterMesh0")), r)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "Mesh", "values": {"RelativeLocatio": {"X": 1, "Y": 1, "Z": 1}}})
+check("unknown property -> UNKNOWN_PROPERTY, nothing written", not r["ok"] and r["errorCode"] == "UNKNOWN_PROPERTY" and mesh_values(H)["RelativeLocation"]["z"] == -60, r)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "Mesh", "values": {"RelativeLocation": {"X": 5, "Y": 5, "Z": 5}, "RelativeScale3D": "big"}})
+check("one bad value among good ones -> error, nothing written", not r["ok"] and r["errorCode"] in ("INVALID_VALUE", "WRITE_FAILED") and mesh_values(H)["RelativeLocation"]["x"] == 0, r)
+r = c("blueprint_set_component_defaults", {"path": fx["enum"], "component": "Mesh", "values": {"A": 1}})
+check("not a Blueprint -> BLUEPRINT_NOT_FOUND", not r["ok"] and r["errorCode"] == "BLUEPRINT_NOT_FOUND", r)
+r = c("batch", {"steps": [
+    {"tool": "blueprint_set_component_defaults", "args": {"path": H, "component": "Mesh", "values": {"RelativeLocation": {"X": 9, "Y": 9, "Z": 9}}}},
+    {"tool": "object_set", "args": {"path": fx["bp"], "classDefault": True, "values": {"NotAField": 1}}}]})
+check("one undo step: an atomic batch that fails after the component write rolls it back", not r["ok"] and r["data"].get("rolledBack") and mesh_values(H)["RelativeLocation"]["x"] == 0, [r, mesh_values(H)])
+
+# a component the Blueprint adds itself, and a child Blueprint changing a component of its parent Blueprint
+r = c("blueprint_add_component", {"path": H, "class": "StaticMeshComponent", "name": "Body"})
+check("blueprint_add_component Body", r["ok"], r)
+r = c("blueprint_set_component_defaults", {"path": H, "component": "Body", "values": {"StaticMesh": "/Engine/BasicShapes/Cube.Cube", "RelativeScale3D": {"X": 3, "Y": 3, "Z": 3}}})
+tpl = (c("blueprint_info", {"path": H})["data"]["components"] or [{}])[0].get("template", "")
+got = c("object_get", {"path": tpl, "properties": ["StaticMesh", "RelativeScale3D"]})["data"]["properties"] if tpl else {}
+check("own SCS component Body: StaticMesh and scale written", r["ok"] and r["data"]["source"] == "blueprint" and got.get("RelativeScale3D", {}).get("x") == 3 and "Cube" in str(got.get("StaticMesh")), [r, got])
+r = c("blueprint_create", {"path": HC, "parent": H})
+check("blueprint_create child of a Blueprint", r["ok"], r)
+inh = {x["name"]: x for x in c("blueprint_info", {"path": HC})["data"]["inheritedComponents"]}
+check("child lists the parent Blueprint's component and the C++ ones", inh.get("Body", {}).get("source") == "blueprint:BP_EWHero" and "CharacterMesh0" in inh, inh)
+r = c("blueprint_set_component_defaults", {"path": HC, "component": "Body", "values": {"RelativeScale3D": {"X": 5, "Y": 5, "Z": 5}}})
+child_tpl = (r.get("data") or {}).get("template", "")
+child = c("object_get", {"path": child_tpl, "properties": ["RelativeScale3D"]})["data"]["properties"] if child_tpl else {}
+parent = c("object_get", {"path": tpl, "properties": ["RelativeScale3D"]})["data"]["properties"]
+check("child changes the parent Blueprint's component (override in the child); the parent keeps its value",
+      r["ok"] and r["data"]["source"] == "blueprint:BP_EWHero" and child.get("RelativeScale3D", {}).get("x") == 5 and parent["RelativeScale3D"]["x"] == 3, [r, child, parent])
+r = c("blueprint_set_component_defaults", {"path": HC, "component": "CharacterMesh0", "values": {"RelativeLocation": {"X": 0, "Y": 0, "Z": -10}}})
+check("child changes the C++ component too, without touching the parent Blueprint",
+      r["ok"] and mesh_values(HC)["RelativeLocation"]["z"] == -10 and mesh_values(H)["RelativeLocation"]["z"] == -60, [r, mesh_values(HC), mesh_values(H)])
+delete_if_exists(HC, H)
+check("ER-18 fixtures deleted", not c("asset_exists", {"path": H})["data"]["exists"] and not c("asset_exists", {"path": HC})["data"]["exists"])
+
 done()

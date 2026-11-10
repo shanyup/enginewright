@@ -1,7 +1,13 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Containers/Ticker.h"
+#include "GameFramework/PawnMovementComponent.h"
+#include "NavigationPath.h"
+#include "NavigationSystem.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -20,6 +26,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "UnrealClient.h"
@@ -350,10 +357,224 @@ void RegisterPieTools(FEWRegistry& R)
 			});
 		});
 
+	R.RegisterAsync(TEXT("pie_walk_to"),
+		TEXT("Walk a Play In Editor player's pawn to a world position, like a player holding the move keys: every frame it adds movement input toward the target, so the game's own movement (speed, collision, animation) does the walking. With a navigation mesh in the level (mode auto, the default) it follows the navmesh path; without one it walks straight. Stops when the pawn is within acceptRadius (ok, reached), when it has not moved for stuckSeconds (STUCK, with the last position and the blocking hint), or after timeout seconds (TIMEOUT). Every reply carries the final location and distance. Use pie_state to read positions and pie_input for single key presses."),
+		TEXT(R"({"type":"object","properties":{
+			"x":{"type":"number","description":"Target world X."},
+			"y":{"type":"number","description":"Target world Y."},
+			"z":{"type":"number","description":"Target world Z. Omit to ignore height (distance is then measured on the ground plane)."},
+			"player":{"type":"integer","description":"Local player index (0 = first / host). Default 0."},
+			"acceptRadius":{"type":"number","description":"Reached when closer than this many units. Default 80."},
+			"timeout":{"type":"number","description":"Give up after this many seconds. Default 30, max 300."},
+			"stuckSeconds":{"type":"number","description":"STUCK when the pawn moved less than 10 units in this time. Default 2."},
+			"mode":{"type":"string","enum":["auto","navmesh","direct"],"description":"auto (default): navmesh path when one exists, else straight; navmesh: fail with NO_NAVMESH when there is no path; direct: straight line, no navmesh."}},
+			"required":["x","y"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			FString Err;
+			APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
+			if (!PC) { Done(FEWResult::Error(TEXT("NO_PLAYER"), Err)); return; }
+			APawn* Pawn = PC->GetPawn();
+			if (!Pawn) { Done(FEWResult::Error(TEXT("NO_PAWN"), TEXT("This player has no pawn yet (the game may still be loading or spawning).")));  return; }
+			if (!Pawn->GetMovementComponent()) { Done(FEWResult::Error(TEXT("NO_MOVEMENT"), FString::Printf(TEXT("%s has no movement component, so movement input does nothing."), *Pawn->GetClass()->GetName()))); return; }
+			if (PC->IsMoveInputIgnored()) { Done(FEWResult::Error(TEXT("MOVE_INPUT_IGNORED"), TEXT("The game ignores this player's move input right now (a cutscene, menu or tutorial gate usually sets it). Finish that first; ui_state shows what is on screen."))); return; }
+			const FString Mode = Args->HasField(TEXT("mode")) ? EW::Str(Args, TEXT("mode")).ToLower() : TEXT("auto");
+			if (Mode != TEXT("auto") && Mode != TEXT("navmesh") && Mode != TEXT("direct")) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("mode must be auto, navmesh or direct."))); return; }
+			const float Accept = (float)EW::Num(Args, TEXT("acceptRadius"), 80);
+			const float Timeout = (float)EW::Num(Args, TEXT("timeout"), 30);
+			const float StuckSeconds = (float)EW::Num(Args, TEXT("stuckSeconds"), 2);
+			if (Accept < 1.f || Accept > 100000.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("acceptRadius must be 1 to 100000."))); return; }
+			if (Timeout <= 0.f || Timeout > 300.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout must be above 0 and at most 300 seconds."))); return; }
+			if (StuckSeconds < 0.5f || StuckSeconds > 30.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("stuckSeconds must be 0.5 to 30."))); return; }
+			const bool bHasZ = Args->HasField(TEXT("z"));
+			const FVector Start = Pawn->GetActorLocation();
+			const FVector Target((float)EW::Num(Args, TEXT("x"), 0), (float)EW::Num(Args, TEXT("y"), 0), bHasZ ? (float)EW::Num(Args, TEXT("z"), 0) : Start.Z);
+
+			// Waypoints: the navmesh path, or the target itself.
+			TArray<FVector> Way;
+			FString Used = TEXT("direct");
+			if (Mode != TEXT("direct"))
+			{
+				UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Pawn->GetWorld());
+				UNavigationPath* Path = (Nav && Nav->GetDefaultNavDataInstance()) ? Nav->FindPathToLocationSynchronously(Pawn->GetWorld(), Start, Target, Pawn) : nullptr;
+				if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
+				{
+					for (int32 i = 1; i < Path->PathPoints.Num(); ++i) { Way.Add(Path->PathPoints[i]); }
+					Used = TEXT("navmesh");
+					if (Path->IsPartial()) { Used = TEXT("navmeshPartial"); }
+				}
+				else if (Mode == TEXT("navmesh")) { Done(FEWResult::Error(TEXT("NO_NAVMESH"), TEXT("No navigation path to the target: the level has no navmesh, or the target is off it. Use mode auto or direct."))); return; }
+			}
+			if (Way.Num() == 0) { Way.Add(Target); }
+
+			struct FWalk
+			{
+				TWeakObjectPtr<APawn> Pawn;
+				TWeakObjectPtr<APlayerController> PC;
+				TArray<FVector> Way;
+				int32 Index = 0;
+				FVector Target, Start, SamplePos;
+				bool bHasZ = false;
+				double T0 = 0, SampleTime = 0, End = 0;
+				float Accept = 80, StuckSeconds = 2;
+				FString Mode;
+			};
+			TSharedRef<FWalk> W = MakeShared<FWalk>();
+			W->Pawn = Pawn; W->PC = PC; W->Way = Way; W->Target = Target; W->Start = Start; W->SamplePos = Start; W->bHasZ = bHasZ;
+			W->T0 = W->SampleTime = FPlatformTime::Seconds(); W->End = W->T0 + Timeout; W->Accept = Accept; W->StuckSeconds = StuckSeconds; W->Mode = Used;
+
+			auto Report = [](const FWalk& Wk, APawn* P, const TCHAR* Status) -> TSharedRef<FJsonObject>
+			{
+				TSharedRef<FJsonObject> D = MakeShared<FJsonObject>();
+				const FVector L = P ? P->GetActorLocation() : Wk.SamplePos;
+				const FVector Delta = Wk.Target - L;
+				D->SetStringField(TEXT("status"), Status);
+				D->SetBoolField(TEXT("reached"), FCString::Strcmp(Status, TEXT("reached")) == 0);
+				D->SetArrayField(TEXT("location"), Vec(L));
+				D->SetArrayField(TEXT("target"), Vec(Wk.Target));
+				D->SetNumberField(TEXT("distance"), FMath::RoundToDouble((Wk.bHasZ ? Delta.Size() : Delta.Size2D()) * 10) / 10);
+				D->SetNumberField(TEXT("seconds"), FMath::RoundToDouble((FPlatformTime::Seconds() - Wk.T0) * 100) / 100);
+				D->SetStringField(TEXT("mode"), Wk.Mode);
+				D->SetNumberField(TEXT("waypoints"), Wk.Way.Num());
+				return D;
+			};
+
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([W, Done, Report](float) -> bool
+			{
+				APawn* P = W->Pawn.Get();
+				APlayerController* Ctl = W->PC.Get();
+				if (!P || !Ctl || !EW::IsPlaying()) { Done(FEWResult::Error(TEXT("PIE_STOPPED"), TEXT("The pawn or Play In Editor went away while walking."))); return false; }
+				const FVector L = P->GetActorLocation();
+				const double Now = FPlatformTime::Seconds();
+				const FVector ToTarget = W->Target - L;
+				if ((W->bHasZ ? ToTarget.Size() : ToTarget.Size2D()) <= W->Accept)
+				{
+					Done(FEWResult::Ok(Report(*W, P, TEXT("reached")), TEXT("Reached the target.")));
+					return false;
+				}
+				// Next waypoint: skip the ones already close (the last one uses the accept radius above).
+				while (W->Index < W->Way.Num() - 1 && (W->Way[W->Index] - L).Size2D() < FMath::Max(60.f, W->Accept * 0.5f)) { ++W->Index; }
+				FVector Dir = W->Way[W->Index] - L;
+				Dir.Z = 0;
+				if (!Dir.IsNearlyZero()) { P->AddMovementInput(Dir.GetSafeNormal(), 1.0f); }
+				if ((L - W->SamplePos).Size() > 10.f) { W->SamplePos = L; W->SampleTime = Now; }
+				else if (Now - W->SampleTime > W->StuckSeconds)
+				{
+					FEWResult Res = FEWResult::Error(TEXT("STUCK"), FString::Printf(TEXT("The pawn did not move for %.1f s at %.0f, %.0f, %.0f (something blocks it, or the game does not use movement input). Look at screenshot, ui_state (a menu may own the input) and pie_state."), W->StuckSeconds, L.X, L.Y, L.Z));
+					Res.Data = Report(*W, P, TEXT("stuck"));
+					Done(Res);
+					return false;
+				}
+				if (Now > W->End)
+				{
+					FEWResult Res = FEWResult::Error(TEXT("TIMEOUT"), TEXT("The pawn did not reach the target in time. data has its last position."));
+					Res.Data = Report(*W, P, TEXT("timeout"));
+					Done(Res);
+					return false;
+				}
+				return true;
+			}));
+		});
+
+	R.RegisterAsync(TEXT("pie_travel"),
+		TEXT("Travel a running Play In Editor session to another map with URL options, like the ServerTravel console command but checked: map is a map asset path (/Game/Maps/MAP_Run) or a map name; options is the URL option string (?game=/Script/MyGame.MyGameMode?listen, or game=...,listen=...). The map must exist (MAP_NOT_FOUND with the closest names), options must be Key or Key=Value pairs without spaces. It travels the server (or standalone) world, then waits until the new map is loaded and every local player has a pawn (wait false returns right after the travel starts). Returns the travel URL and the Play In Editor state. Use pie_start to start a session and pie_state to read the map."),
+		TEXT(R"({"type":"object","properties":{
+			"map":{"type":"string","description":"Map asset path like /Game/Maps/MAP_Run, or just the map name."},
+			"options":{"type":"string","description":"URL options, e.g. ?game=/Script/RagnaCook.RC_RunGameMode?listen (a leading ? and ? or , between options are accepted)."},
+			"wait":{"type":"boolean","description":"Wait until the new map has loaded and every local player has a pawn (default true)."},
+			"timeout":{"type":"number","description":"Seconds to wait, default 60, max 600."}},
+			"required":["map"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			if (!EW::IsPlaying()) { Done(FEWResult::Error(TEXT("NO_PLAYER"), TEXT("Play In Editor is not running (pie_start first)."))); return; }
+			const FString MapArg = EW::Str(Args, TEXT("map")).TrimStartAndEnd();
+			if (MapArg.IsEmpty()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("map must not be empty."))); return; }
+			const float Timeout = (float)EW::Num(Args, TEXT("timeout"), 60);
+			if (Timeout <= 0.f || Timeout > 600.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout must be above 0 and at most 600 seconds."))); return; }
+
+			// The map must exist: match the package path, or the short name, among the map assets.
+			FString MapPackage = MapArg;
+			MapPackage.RemoveFromEnd(TEXT(".umap"));
+			if (int32 Dot; MapPackage.FindChar(TEXT('.'), Dot)) { MapPackage.LeftInline(Dot); }
+			TArray<FString> Maps;
+			{
+				TArray<FAssetData> Found;
+				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), Found, /*bSearchSubClasses*/ true);
+				for (const FAssetData& A : Found) { Maps.AddUnique(A.PackageName.ToString()); }
+				Maps.Sort();
+			}
+			FString Found;
+			TArray<FString> Short;
+			for (const FString& M : Maps)
+			{
+				const FString Name = FPackageName::GetShortName(M);
+				Short.Add(Name);
+				if (M.Equals(MapPackage, ESearchCase::IgnoreCase) || (!MapPackage.Contains(TEXT("/")) && Name.Equals(MapPackage, ESearchCase::IgnoreCase))) { if (Found.IsEmpty()) { Found = M; } else if (!Found.Equals(M)) { Done(FEWResult::Error(TEXT("AMBIGUOUS"), FString::Printf(TEXT("Several maps are named '%s': %s and %s. Pass the full path."), *MapPackage, *Found, *M))); return; } }
+			}
+			if (Found.IsEmpty()) { Done(FEWResult::Error(TEXT("MAP_NOT_FOUND"), FString::Printf(TEXT("No map '%s'. Pass a map asset path such as /Game/Maps/MAP_Run."), *MapArg), EW::Suggest(FPackageName::GetShortName(MapPackage), Short))); return; }
+
+			// Options: normalise to ?Key=Value?Key.
+			FString Opt = EW::Str(Args, TEXT("options")).TrimStartAndEnd();
+			Opt.ReplaceInline(TEXT(","), TEXT("?"));
+			TArray<FString> Tokens;
+			Opt.ParseIntoArray(Tokens, TEXT("?"), true);
+			FString Url = Found;
+			for (const FString& T : Tokens)
+			{
+				FString Key = T, Val;
+				T.Split(TEXT("="), &Key, &Val);
+				bool bBad = Key.IsEmpty();
+				for (const TCHAR C : Key) { if (!FChar::IsAlnum(C) && C != TEXT('_') && C != TEXT('-')) { bBad = true; } }
+				for (const TCHAR C : T) { if (FChar::IsWhitespace(C)) { bBad = true; } }
+				if (bBad) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Bad option '%s': use Key or Key=Value without spaces, joined by ? (e.g. ?game=/Script/MyGame.MyMode?listen)."), *T))); return; }
+				Url += TEXT("?") + T;
+			}
+
+			UWorld* Server = EW::PieWorlds().Num() ? EW::PieWorlds()[0] : nullptr;
+			if (!Server || !Server->GetAuthGameMode()) { Done(FEWResult::Error(TEXT("NO_AUTHORITY"), TEXT("The first Play In Editor world has no game mode, so it cannot travel (in a client-only session travel from the server)."))); return; }
+			const TWeakObjectPtr<UWorld> OldWorld = Server;
+			const FString ShortMap = FPackageName::GetShortName(Found);
+			if (!Server->ServerTravel(Url, /*bAbsolute*/ false))
+			{
+				Done(FEWResult::Error(TEXT("TRAVEL_FAILED"), FString::Printf(TEXT("ServerTravel('%s') was refused (a travel may already be running)."), *Url))); return;
+			}
+			TSharedRef<FJsonObject> Info = MakeShared<FJsonObject>();
+			Info->SetStringField(TEXT("travelUrl"), Url);
+			if (!EW::Bool(Args, TEXT("wait"), true))
+			{
+				Info->SetBoolField(TEXT("waited"), false);
+				Done(FEWResult::Ok(Info, TEXT("Travel started; poll pie_state."))); return;
+			}
+			const double T0 = FPlatformTime::Seconds();
+			EW::PollUntil(Timeout,
+				[Done, Info, OldWorld, ShortMap, T0]() -> bool
+				{
+					const TArray<UWorld*> Worlds = EW::PieWorlds();
+					if (!EW::IsPlaying() || Worlds.Num() == 0 || Worlds[0] == OldWorld.Get() || !Worlds[0]->GetMapName().EndsWith(ShortMap)) { return false; }
+					if (LocalPlayerCount() < 1) { return false; }
+					TSharedRef<FJsonObject> D = PieState();
+					D->SetStringField(TEXT("travelUrl"), Info->GetStringField(TEXT("travelUrl")));
+					D->SetBoolField(TEXT("waited"), true);
+					D->SetNumberField(TEXT("seconds"), FMath::RoundToDouble((FPlatformTime::Seconds() - T0) * 10) / 10);
+					Done(FEWResult::Ok(D, TEXT("Travelled; the new map is loaded.")));
+					return true;
+				},
+				[Done, Info, ShortMap]()
+				{
+					FEWResult Res = FEWResult::Error(TEXT("TIMEOUT"), FString::Printf(TEXT("The map %s did not finish loading with a player pawn in time. data has the Play In Editor state; log_read shows load errors."), *ShortMap));
+					TSharedRef<FJsonObject> D = PieState();
+					D->SetStringField(TEXT("travelUrl"), Info->GetStringField(TEXT("travelUrl")));
+					Res.Data = D;
+					Done(Res);
+				});
+		});
+
 	R.Register(TEXT("screenshot"),
 		TEXT("Capture what a Play In Editor player sees, UI included (source game, the default while playing), or the level editor viewport (source editor). Saves a PNG under Saved/Enginewright/Screenshots and returns it as an image, with its mean brightness (warns when nearly black)."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string","enum":["game","editor"]},
+			"source":{"type":"string","enum":["game","editor"],"description":"game (default while playing) or editor."},
 			"player":{"type":"integer","description":"Local player for source game; default 0."},
 			"ui":{"type":"boolean","description":"Source game: include the UI drawn over the scene (UMG, CommonUI, HUD widgets). Default true; false = the 3D scene only. data.ui tells what the image shows."},
 			"maxWidth":{"type":"integer","description":"Downsize to this width; default 1280, 0 = full size."},
@@ -407,8 +628,8 @@ void RegisterPieTools(FEWRegistry& R)
 	R.RegisterAsync(TEXT("screenshot_ab"),
 		TEXT("Before/after picture in one call: capture a view (A), run steps (tool calls such as object_set or console_command) or one console command, wait, capture the same view again (B), and return both side by side with the share of pixels that changed."),
 		TEXT(R"({"type":"object","properties":{
-			"source":{"type":"string","enum":["game","editor"]},
-			"player":{"type":"integer"},
+			"source":{"type":"string","enum":["game","editor"],"description":"game (default while playing) or editor."},
+			"player":{"type":"integer","description":"Local player for source game; default 0."},
 			"steps":{"type":"array","items":{"type":"object"},"description":"[{tool, args}] run between the captures (tools that finish at once)."},
 			"command":{"type":"string","description":"A console command to run between the captures."},
 			"wait":{"type":"number","description":"Seconds between the change and capture B, default 0.5."},

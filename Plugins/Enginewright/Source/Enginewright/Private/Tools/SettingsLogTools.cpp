@@ -140,7 +140,7 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 		TEXT("Wait until a log line containing pattern appears (from now, or after since), e.g. after pie_start, a console command or a cheat. Returns the matching line, or TIMEOUT."),
 		TEXT(R"({"type":"object","properties":{
 			"pattern":{"type":"string","description":"Case-insensitive text the line must contain."},
-			"category":{"type":"string"},
+			"category":{"type":"string","description":"Log category, e.g. LogTemp or LogBlueprint."},
 			"since":{"type":"number","description":"Also match lines after this sequence number (lastSeq of an earlier log_read)."},
 			"timeout":{"type":"number","description":"Seconds, default 10, max 600."}},
 			"required":["pattern"]})"),
@@ -194,7 +194,7 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 		TEXT(R"({"type":"object","properties":{
 			"pattern":{"type":"string","description":"Case-insensitive text the line must contain."},
 			"category":{"type":"string","description":"Log category, e.g. LogTemp or LogBlueprint."},
-			"minVerbosity":{"type":"string","enum":["Error","Warning","Display","Log"]},
+			"minVerbosity":{"type":"string","enum":["Error","Warning","Display","Log"],"description":"Minimum severity: Error, Warning, Display or Log (default Log = all)."},
 			"since":{"type":"number","description":"Only lines after this sequence number."},
 			"limit":{"type":"integer","description":"Newest lines returned, default 100."}}})"),
 		false,
@@ -245,7 +245,7 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 		TEXT("Read project or editor settings from a settings class (e.g. RendererSettings, GameMapsSettings, or your own UDeveloperSettings)."),
 		TEXT(R"({"type":"object","properties":{
 			"class":{"type":"string","description":"Settings class: short name or /Script/Module.Class."},
-			"properties":{"type":"array","items":{"type":"string"}}},
+			"properties":{"type":"array","items":{"type":"string"},"description":"Field names to read, e.g. [\"bUseFixedFrameRate\"]. Omit for all."}},
 			"required":["class"]})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -268,10 +268,10 @@ void RegisterSettingsLogTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("settings_set"),
-		TEXT("Change project settings through the running editor and write them to the project's Default*.ini, so the editor will not overwrite them on exit. Values are checked like object_set. Some settings need an editor restart."),
+		TEXT("Change project settings through the running editor and write them to the project's Default*.ini, so the editor will not overwrite them on exit. Values are checked like object_set. Some settings need an editor restart. Project-scope settings are written to the project's Config/Default*.ini (a file in source control); data.configFile names it."),
 		TEXT(R"({"type":"object","properties":{
-			"class":{"type":"string"},
-			"values":{"type":"object"}},
+			"class":{"type":"string","description":"Settings class: short name or /Script/Module.Class."},
+			"values":{"type":"object","description":"Field name -> new value, e.g. {\"bUseFixedFrameRate\":true}."}},
 			"required":["class","values"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult

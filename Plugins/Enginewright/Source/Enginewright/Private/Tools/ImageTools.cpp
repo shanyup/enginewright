@@ -1,6 +1,7 @@
 // image_compose: put PNG images side by side in one labelled PNG (ER-03). Runs in the editor, no Python.
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
+#include "EWImageStats.h"
 
 #include "HAL/FileManager.h"
 #include "IImageWrapper.h"
@@ -45,34 +46,11 @@ namespace
 
 	bool ReadPng(const FString& Path, FImg& Out, FString& Error)
 	{
-		TArray64<uint8> Bytes;
-		if (!FFileHelper::LoadFileToArray(Bytes, *Path))
-		{
-			Error = FString::Printf(TEXT("cannot read %s"), *Path);
-			return false;
-		}
-		IImageWrapperModule& M = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-		if (M.DetectImageFormat(Bytes.GetData(), Bytes.Num()) != EImageFormat::PNG)
-		{
-			Error = FString::Printf(TEXT("%s is not a PNG file"), *Path);
-			return false;
-		}
-		TSharedPtr<IImageWrapper> W = M.CreateImageWrapper(EImageFormat::PNG);
-		TArray64<uint8> Raw;
-		if (!W.IsValid() || !W->SetCompressed(Bytes.GetData(), Bytes.Num()) || !W->GetRaw(ERGBFormat::BGRA, 8, Raw))
-		{
-			Error = FString::Printf(TEXT("%s could not be decoded as PNG"), *Path);
-			return false;
-		}
-		Out.W = (int32)W->GetWidth();
-		Out.H = (int32)W->GetHeight();
-		if (Out.W <= 0 || Out.H <= 0 || Raw.Num() != (int64)Out.W * Out.H * 4)
-		{
-			Error = FString::Printf(TEXT("%s has an unexpected size"), *Path);
-			return false;
-		}
-		Out.Px.SetNumUninitialized(Out.W * Out.H);
-		FMemory::Memcpy(Out.Px.GetData(), Raw.GetData(), Raw.Num());
+		EW::FPngImage I;
+		if (!EW::DecodePng(Path, I, Error)) { return false; }
+		Out.W = I.W;
+		Out.H = I.H;
+		Out.Px = MoveTemp(I.Px);
 		return true;
 	}
 
@@ -393,5 +371,74 @@ void RegisterImageTools(FEWRegistry& R)
 				Res.Warnings.Add(TEXT("Some label characters are not in the built-in font and were drawn as '?': ") + Data->GetStringField(TEXT("unsupportedChars")));
 			}
 			return Res;
+		});
+
+	R.Register(TEXT("image_stats"),
+		TEXT("Numbers for a PNG: mean brightness (luma, 0-255), min/max luma, a 16-bin luma histogram (percent of pixels per bin, bin 0 = darkest), mean saturation (0-1), clipped black percent (luma <= 2) and clipped white percent (luma >= 253). ")
+		TEXT("With reference it also reports diff: meanLumaDelta (path minus reference), meanAbsPixelDiff (0-255), changedPixelPercent (a channel differs by more than 8) and ssim (structural similarity of the luma over 8x8 blocks, 1 = identical). Both images must have the same size. region limits the numbers to a rectangle. ")
+		TEXT("Use it to check a screenshot is not black or blown out, to compare two game_run screenshots (before/after, two exposure settings: see game_run cvars and variants) and to tell if a change moved the picture at all. Luma uses Rec.709 weights on the stored (sRGB encoded) values, not linear light. Read only, files only."),
+		TEXT(R"({"type":"object","properties":{
+			"path":{"type":"string","description":"PNG file (absolute, or relative to the project folder)."},
+			"reference":{"type":"string","description":"Second PNG of the same size to compare against: adds the diff object."},
+			"region":{"type":"object","description":"Pixel rectangle {\"x\":0,\"y\":0,\"width\":100,\"height\":50} (top-left origin) used for both images. Default: the whole image."}},
+			"required":["path"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
+		{
+			const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+			auto Abs = [&ProjectDir](const FString& P)
+			{
+				FString S = P;
+				FPaths::NormalizeFilename(S);
+				return FPaths::IsRelative(S) ? FPaths::ConvertRelativePathToFull(ProjectDir, S) : FPaths::ConvertRelativePathToFull(S);
+			};
+			if (EW::Str(Args, TEXT("path")).IsEmpty()) { return FEWResult::Error(TEXT("MISSING_ARGUMENT"), TEXT("path is empty.")); }
+			const FString Path = Abs(EW::Str(Args, TEXT("path")));
+			if (!IFileManager::Get().FileExists(*Path)) { return FEWResult::Error(TEXT("NOT_FOUND"), FString::Printf(TEXT("Image not found: %s"), *Path)); }
+			EW::FPngImage Img;
+			FString Err;
+			if (!EW::DecodePng(Path, Img, Err)) { return FEWResult::Error(TEXT("BAD_IMAGE"), Err); }
+
+			EW::FImageRegion Region;
+			const TSharedPtr<FJsonObject>* RegionObj = nullptr;
+			if (Args->HasField(TEXT("region")))
+			{
+				if (!Args->TryGetObjectField(TEXT("region"), RegionObj)) { return FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("region must be an object {x, y, width, height}.")); }
+				const TArray<FString> Allowed = { TEXT("x"), TEXT("y"), TEXT("width"), TEXT("height") };
+				for (const auto& KV : (*RegionObj)->Values)
+				{
+					if (!Allowed.Contains(FString(KV.Key)))
+					{
+						return FEWResult::Error(TEXT("UNKNOWN_ARGUMENT"), FString::Printf(TEXT("region has unknown key '%s'. Allowed: x, y, width, height."), *KV.Key), EW::Suggest(FString(KV.Key), Allowed));
+					}
+				}
+				Region.X = (int32)EW::Num(*RegionObj, TEXT("x"), 0);
+				Region.Y = (int32)EW::Num(*RegionObj, TEXT("y"), 0);
+				Region.W = (int32)EW::Num(*RegionObj, TEXT("width"), Img.W - Region.X);
+				Region.H = (int32)EW::Num(*RegionObj, TEXT("height"), Img.H - Region.Y);
+				if (Region.X < 0 || Region.Y < 0 || Region.W <= 0 || Region.H <= 0 || Region.X + Region.W > Img.W || Region.Y + Region.H > Img.H)
+				{
+					return FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("region x=%d y=%d width=%d height=%d is empty or outside the %dx%d image."), Region.X, Region.Y, Region.W, Region.H, Img.W, Img.H));
+				}
+			}
+			EW::FPngImage RefImg;
+			const bool bRef = Args->HasField(TEXT("reference"));
+			if (bRef)
+			{
+				const FString RefArg = EW::Str(Args, TEXT("reference"));
+				if (RefArg.IsEmpty()) { return FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("reference is empty; give a PNG path or leave it out.")); }
+				const FString RefPath = Abs(RefArg);
+				if (!IFileManager::Get().FileExists(*RefPath)) { return FEWResult::Error(TEXT("NOT_FOUND"), FString::Printf(TEXT("Reference image not found: %s"), *RefPath)); }
+				if (!EW::DecodePng(RefPath, RefImg, Err)) { return FEWResult::Error(TEXT("BAD_IMAGE"), Err); }
+				if (RefImg.W != Img.W || RefImg.H != Img.H)
+				{
+					return FEWResult::Error(TEXT("SIZE_MISMATCH"), FString::Printf(TEXT("path is %dx%d but reference is %dx%d; both images need the same size (run both at the same resolution)."), Img.W, Img.H, RefImg.W, RefImg.H));
+				}
+			}
+			TSharedRef<FJsonObject> Data = EW::ImageStatsJson(Img, Region, bRef ? &RefImg : nullptr);
+			Data->SetStringField(TEXT("path"), Path);
+			Data->SetNumberField(TEXT("width"), Img.W);
+			Data->SetNumberField(TEXT("height"), Img.H);
+			return FEWResult::Ok(Data);
 		});
 }

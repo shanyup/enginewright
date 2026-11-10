@@ -3,10 +3,11 @@
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 
-#define ENGINEWRIGHT_VERSION TEXT("0.3.1")
+#define ENGINEWRIGHT_VERSION TEXT("0.4.0")
 
 class UWorld;
 class APlayerController;
+struct FEnhancedActionKeyMapping;
 
 namespace EW
 {
@@ -61,8 +62,16 @@ namespace EW
 	/** Player controller of PIE player Index (0 = first). Null with OutError when missing. */
 	APlayerController* PiePlayer(int32 Index, FString& OutError);
 
+	/** The Enhanced Input mappings a Play In Editor player has right now (live, runtime remaps included). False when the player has no Enhanced Input. */
+	bool PlayerInputMappings(APlayerController* PC, TArray<FEnhancedActionKeyMapping>& Out);
+	/** Input mapping contexts applied to the player as (asset path, priority), highest priority first. */
+	TArray<TPair<FString, int32>> PlayerInputContexts(APlayerController* PC);
+
 	/** True when an asset already lives at this package path: on disk, or in memory and not deleted. */
 	bool AssetPathTaken(const FString& PackagePath);
+
+	/** File of a package on disk (.uasset or .umap). False when no file exists; OutFile is then the .uasset name. */
+	bool PackageFileOnDisk(const FString& Package, FString& OutFile);
 
 	/** Package names of assets of Class (and subclasses) under Folder, recursively. */
 	TArray<FString> FindAssets(const FString& Folder, UClass* Class);

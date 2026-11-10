@@ -40,6 +40,8 @@ def rpc(method, params=None, tok=None, timeout=300) -> tuple[int, Any]:
             return r.status, json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")
+    except urllib.error.URLError:
+        raise RuntimeError(f"No editor answers on {URL}. Open the project in Unreal Editor with the Enginewright plugin enabled (the server starts with the editor), then run again.")
 
 
 def call_raw(name, args=None, timeout=300) -> Any:

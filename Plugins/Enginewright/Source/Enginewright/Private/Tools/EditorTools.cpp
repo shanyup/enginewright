@@ -1,10 +1,12 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "FileHelpers.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/FileManager.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/PackageName.h"
 #include "Misc/StringOutputDevice.h"
@@ -90,7 +92,7 @@ void RegisterEditorTools(FEWRegistry& R)
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("level_save"),
-		TEXT("Save the open level, or save it as a new map with path (the editor then works on the new map)."),
+		TEXT("Save the open level, or save a copy as a new map with path. With path, the map is saved as a new .umap under the project's Content (data.file); the editor may stay on the old map (data.editorMap)."),
 		TEXT(R"({"type":"object","properties":{"path":{"type":"string","description":"Save as this new map path; omit to save in place."}}})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -111,12 +113,34 @@ void RegisterEditorTools(FEWRegistry& R)
 			{
 				FString Folder, Name, Err;
 				if (!EW::SplitAssetPath(Path, Folder, Name, Err)) { return FEWResult::Error(TEXT("INVALID_PATH"), Err); }
-				if (FPackageName::DoesPackageExist(Folder / Name)) { return FEWResult::Error(TEXT("ASSET_EXISTS"), FString::Printf(TEXT("'%s' already exists."), *(Folder / Name))); }
-				bOk = FEditorFileUtils::SaveMap(World, Folder / Name);
+				const FString Package = Folder / Name;
+				if (FPackageName::DoesPackageExist(Package)) { return FEWResult::Error(TEXT("ASSET_EXISTS"), FString::Printf(TEXT("'%s' already exists."), *Package)); }
+				// SaveMap wants a file name; a package path here wrote outside the project.
+				const FString FileName = FPackageName::LongPackageNameToFilename(Package, FPackageName::GetMapPackageExtension());
+				bOk = FEditorFileUtils::SaveMap(World, FileName);
+				if (!bOk) { return FEWResult::Error(TEXT("SAVE_FAILED"), TEXT("The level could not be saved.")); }
+				// The editor can stay on the old world after a save-as, and the registry may not know the new package yet: trust the file.
+				if (!IFileManager::Get().FileExists(*FileName))
+				{
+					return FEWResult::Error(TEXT("SAVE_FAILED"), FString::Printf(TEXT("The map was not saved: the file %s is missing."), *FileName));
+				}
+				// Tell the asset registry about the new file so asset_exists / asset_delete see it without waiting for a rescan.
+				FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+				ARM.Get().ScanFilesSynchronous({ FPaths::ConvertRelativePathToFull(FileName) }, /*bForceRescan*/ true);
+				UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+				TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+				Data->SetStringField(TEXT("map"), Package);
+				Data->SetStringField(TEXT("file"), FileName);
+				Data->SetStringField(TEXT("editorMap"), EditorWorld ? EditorWorld->GetOutermost()->GetName() : FString());
+				Data->SetBoolField(TEXT("dirty"), EditorWorld ? EditorWorld->GetOutermost()->IsDirty() : false);
+				return FEWResult::Ok(Data);
 			}
 			if (!bOk) { return FEWResult::Error(TEXT("SAVE_FAILED"), TEXT("The level could not be saved.")); }
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
-			Data->SetStringField(TEXT("map"), GEditor->GetEditorWorldContext().World()->GetOutermost()->GetName());
+			const FString SavedPackage = GEditor->GetEditorWorldContext().World()->GetOutermost()->GetName();
+			Data->SetStringField(TEXT("map"), SavedPackage);
+			FString SavedFileName;
+			if (FPackageName::TryConvertLongPackageNameToFilename(SavedPackage, SavedFileName, FPackageName::GetMapPackageExtension())) { Data->SetStringField(TEXT("file"), SavedFileName); }
 			Data->SetBoolField(TEXT("dirty"), GEditor->GetEditorWorldContext().World()->GetOutermost()->IsDirty());
 			return FEWResult::Ok(Data);
 		}, /*bTransactional*/ false);

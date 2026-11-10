@@ -142,7 +142,7 @@ void RegisterAuditTools(FEWRegistry& R)
 	R.Register(TEXT("asset_search_text"),
 		TEXT("Find where a name, string, text or ID is stored inside content: DataTable rows, Blueprint variable defaults, data assets (no binary grep). Use it before renaming an ID or deleting an asset that is referenced by name."),
 		TEXT(R"({"type":"object","properties":{
-			"text":{"type":"string"},
+			"text":{"type":"string","description":"Name, string, text or ID to search for, e.g. Item_Sword."},
 			"folder":{"type":"string","description":"Default /Game."},
 			"exact":{"type":"boolean","description":"Whole value must match (case-insensitive). Default false = contains."},
 			"maxAssets":{"type":"integer","description":"Assets to scan, default 5000."}},
@@ -168,10 +168,10 @@ void RegisterAuditTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("id_audit"),
-		TEXT("Check that IDs stay consistent across content. Defined IDs come from a DataTable's row names (source) or a list (ids). Used IDs are the values of fields whose name matches fieldPattern (default: ends with ID) in DataTables, Blueprint defaults and data assets. Reports IDs used but never defined (broken) and defined but never used."),
+		TEXT("Check that IDs stay consistent across content. Defined IDs come from a DataTable's row names (source) or a list (ids). Used IDs are the values of fields whose name matches fieldPattern (default: ends with ID) in DataTables, Blueprint defaults and data assets. Reports IDs used but never defined (broken) and defined but never used. ok is false (UNDEFINED_IDS) when an ID is used but not defined; see data.undefined."),
 		TEXT(R"({"type":"object","properties":{
 			"source":{"type":"string","description":"DataTable whose row names are the defined IDs."},
-			"ids":{"type":"array","items":{"type":"string"}},
+			"ids":{"type":"array","items":{"type":"string"},"description":"Defined IDs in addition to source row names, e.g. [\"ITEM_SWORD\"]."},
 			"folder":{"type":"string","description":"Default /Game."},
 			"fieldPattern":{"type":"string","description":"Regex for field names that hold IDs; default (?i).*ID$"}}})"),
 		false,
@@ -234,7 +234,7 @@ void RegisterAuditTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("key_audit"),
-		TEXT("Find hard-coded input keys: EKeys:: and FKey(\"...\") in the project's C++ source, and key input event nodes / key pin defaults in Blueprint graphs. Use it to enforce 'no hard-coded keys, use Enhanced Input'."),
+		TEXT("Find hard-coded input keys: EKeys:: and FKey(\"...\") in the project's C++ source, and key input event nodes / key pin defaults in Blueprint graphs. Use it to enforce 'no hard-coded keys, use Enhanced Input'. ok is false (HARDCODED_KEYS) when any hard-coded key is found; the list is in data."),
 		TEXT(R"({"type":"object","properties":{
 			"folder":{"type":"string","description":"Content folder for Blueprints, default /Game."},
 			"source":{"type":"boolean","description":"Scan the project's Source folder (default true)."}}})"),

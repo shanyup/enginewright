@@ -1,6 +1,6 @@
 # Enginewright
 
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](docs/release-notes/v0.3.1.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](docs/release-notes/v0.4.0.md)
 [![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.8-black)](#supported-versions)
 [![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)](#supported-versions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -11,7 +11,27 @@ An Unreal Engine editor plugin that runs a [Model Context Protocol](https://mode
 
 *Above: an agent calls Enginewright tools on a fresh UE 5.8 project. It creates a menu widget and checks each change with `widget_render`, starts Play In Editor, opens the menu, reads the buttons with `ui_state`, clicks Play, and gets `COVERED` when it tries a button that another widget draws over.*
 
-> **Early preview (v0.3).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.3.1 release notes](docs/release-notes/v0.3.1.md).
+> **Early preview (v0.4).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.4.0 release notes](docs/release-notes/v0.4.0.md). Changes: [CHANGELOG.md](CHANGELOG.md). Supported Unreal features: [docs/SUPPORT.md](docs/SUPPORT.md).
+
+## What's new in 0.4.0
+
+- Localization loop: `loc_gather` takes a target through gather, compile and check while the editor is open, `stringtable_compare` reads `.po` and `.locres` files, `game_run` takes a `culture`, and `font_coverage` plus `game_run` `glyphMisses` find characters that would show as empty boxes.
+- Game testing: `ui_key`, `pie_walk_to` and `pie_travel` drive a running game, `ui_state` shows only what the player can use, and `ui_prompts` with `input_map_list` compares the on-screen hints with the real bindings.
+- Game runs and images: `game_run` takes `shotNames`, `cvars` and `variants`, and `image_stats` reports the brightness, histogram and difference of each screenshot.
+- Save games: `savegame_get` and `savegame_set` read and write a slot by reflection, and a slot with a game checksum is refused unless the game's own save function is passed.
+- Scene tools: `scene_dress` places hundreds of meshes in one undo step, and `actor_preview` photographs an actor class without Play In Editor.
+- MVVM: `viewmodel_*` tools edit view models and bindings, in an optional plugin.
+- Reliability sweep: every tool was run on a real game project (RagnaCook) with 11 fixes, see [docs/RELIABILITY_0.4.md](docs/RELIABILITY_0.4.md).
+
+![actor_preview: the same actor class with BeginPlay off and on, photographed without Play In Editor and put side by side by image_compose](docs/media/actor-preview.png)
+
+*Above: `actor_preview` builds an actor class like the game does (constructor, then BeginPlay and a few ticks) in a preview world and photographs it. Left: constructor only. Right: after BeginPlay the actor placed its own props. No Play In Editor, nothing left in the level.*
+
+The panel now shows the version, with buttons to the roadmap and the changelog on GitHub:
+
+![Enginewright panel 0.4.0 with the What's new / Roadmap and Changelog buttons](docs/media/panel.png)
+
+Full notes: [v0.4.0 release notes](docs/release-notes/v0.4.0.md).
 
 ## Why
 
@@ -100,24 +120,32 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 | Area | Tools |
 |---|---|
 | Objects | `object_get`, `object_set` |
-| Assets | `asset_find`, `asset_exists`, `asset_references`, `asset_duplicate`, `asset_rename` (updates referencers, removes the redirector, reports text and IDs that still name the old asset; `dryRun` to preview), `asset_delete` (refuses assets still in use), `asset_save`, `asset_import` (texture, sound, font, mesh, while the editor is open) |
+| Assets | `asset_find`, `asset_exists`, `asset_references`, `asset_duplicate`, `asset_rename` (updates referencers, removes the redirector, reports text and IDs that still name the old asset; `dryRun` to preview), `asset_delete` (refuses assets still in use; says why per asset: which asset references it, open editor, unsaved changes; `force` explained in the tool text), `asset_save`, `asset_import` (texture, sound, font, mesh, while the editor is open; meshes take `scale`, `rotation`, `translation`, `meshType`) |
 | Types and data | `enum_create`, `struct_create`, `type_info`, `datatable_create`, `datatable_get`, `datatable_set_rows`, `datatable_remove_rows`, `datatable_rename_row` |
-| Blueprints | `blueprint_create`, `blueprint_info`, `blueprint_compile`, `blueprint_add_variables`, `blueprint_remove_variables`, `blueprint_add_component`, `blueprint_remove_component`, `blueprint_graph_read`, `blueprint_add_node`, `blueprint_connect`, `blueprint_set_pin`, `blueprint_remove_node` |
-| Materials, meshes, textures | `material_create`, `material_info`, `material_add_expression`, `material_connect`, `material_instance_create`, `material_instance_set`, `mesh_info`, `mesh_set_material`, `texture_info` |
-| Enhanced Input | `input_action_create`, `input_context_create`, `input_map`, `input_unmap`, `input_context_info` |
-| Level | `level_open`, `level_save`, `actor_find`, `actor_spawn`, `actor_set_transform`, `actor_delete`, `actor_bounds`, `world_trace`, `class_measure` (size of a class or Blueprint without placing it) |
-| Play In Editor | `pie_start` (1-4 players; standalone, listen or client; waits until every player has a pawn), `pie_stop`, `pie_state`, `pie_input` (synthetic Enhanced Input action or key per player), `screenshot` (what a player sees, UI included, or the editor viewport), `screenshot_ab` (same view before and after a change, with the share of changed pixels) |
-| Run the game | `game_run` (the game in `-game` mode or a packaged exe, with a map URL that is passed unchanged and checked against the game's log; one run per resolution; verdict from log patterns; only the log lines you ask for; new PNG files collected with their real size; screenshot runs can end by PNG count; refuses to start the old C++ code after a Live Coding patch; pauses the editor's realtime viewports while the game runs), `game_run_status` (follow or stop a run), `image_compose` (PNG files side by side in one labelled image, read back) |
+| Blueprints | `blueprint_create`, `blueprint_info` (lists inherited C++ components too), `blueprint_set_component_defaults` (defaults of an inherited or Blueprint component, e.g. the Mesh of a Character; checked, read back, one undo step), `blueprint_compile`, `blueprint_add_variables`, `blueprint_remove_variables`, `blueprint_add_component`, `blueprint_remove_component`, `blueprint_graph_read`, `blueprint_add_node`, `blueprint_connect`, `blueprint_set_pin`, `blueprint_remove_node` |
+| Materials, meshes, textures | `material_create`, `material_info`, `material_add_expression`, `material_connect`, `material_instance_create`, `material_instance_set`, `mesh_info` (local bounds, pivot offsets, size, without spawning an actor), `mesh_set_material`, `texture_info` |
+| Enhanced Input | `input_action_create`, `input_context_create`, `input_map`, `input_unmap`, `input_context_info`, `input_map_list` (which keys are bound to which actions, grouped by action and device; from an asset, or live from the Play In Editor player with its applied contexts and priorities, runtime remaps included) |
+| Level | `level_open`, `level_save`, `actor_find`, `actor_spawn`, `actor_set_transform`, `actor_delete`, `actor_bounds`, `world_trace`, `class_measure` (size of a class or Blueprint without placing it), `scene_dress` (set-dress an actor or a point with hundreds of meshes in one undo step: ring or ellipse, line, grid or scatter; several meshes with weights, seed, rotation and scale jitter, ground snapping, overlap and avoid checks; instanced or separate actors; can write the placements into a DataTable such as a game's dressing table), `actor_preview` (builds an actor class that sets itself up in code, construction script and BeginPlay, in a private preview world or temporarily in the open level, takes a PNG from a framed camera, a given one or the actor's own game camera (same layout as a game_run shot) and cleans up: no Play In Editor, no game_run) |
+| Play In Editor | `pie_start` (1-4 players; standalone, listen or client; waits until every player has a pawn), `pie_stop`, `pie_state`, `pie_input` (synthetic Enhanced Input action or key per player), `pie_travel` (go to another map with URL options such as `?game=...?listen`, checked: the map must exist, options are validated; waits until the new map is loaded and every player has a pawn), `pie_walk_to` (walks a player's pawn to a world position with movement input; navmesh path when the level has one; reports `reached`, `STUCK` or `TIMEOUT` with the last position), `screenshot` (what a player sees, UI included, or the editor viewport), `screenshot_ab` (same view before and after a change, with the share of changed pixels) |
+| Run the game | `game_run` (the game in `-game` mode or a packaged exe, with a map URL that is passed unchanged and checked against the game's log; one run per resolution; verdict from log patterns; only the log lines you ask for; new PNG files collected with their real size; screenshot runs can end by PNG count; refuses to start the old C++ code after a Live Coding patch; pauses the editor's realtime viewports while the game runs; `culture` starts the game with `-culture=<x>`; each run counts the characters Slate could not draw, `glyphMisses`; `shotNames` ends the run when the named screenshots exist; `cvars` and `variants` run the game with console variables, e.g. exposure, and report `image_stats` per screenshot), `game_run_status` (follow or stop a run), `image_compose` (PNG files side by side in one labelled image, read back), `image_stats` (mean brightness, luma histogram, saturation, clipped black / white, and the difference to a reference image) |
+| Save games | `savegame_get` (a SaveGame slot's class and field values, or the list of slots; says when the file carries a game checksum or footer), `savegame_set` (writes fields by reflection, all or nothing, saves and reads back from disk; a slot with a game footer is refused unless you pass the game's own save function, so the checksum is never broken) |
 | Multiplayer | `pie_actors` (what the server and each client see: count, net roles, owner, property values; can wait for replication), `pie_net_emulation` (lag, loss, duplicates, reordering; profiles off / average / bad) |
 | Readability | `screen_coverage` (how big an actor looks from a player's camera: pixels and share of the screen) |
-| UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (a Widget Blueprint or a C++ UserWidget class to PNG at any resolution, no Play In Editor) |
-| Runtime UI (UMG + CommonUI) | `ui_state` (widgets in a player's viewport, CommonUI activatable widgets and stacks, visible buttons with label, selected state and rectangle), `ui_click` (by name or label; refuses a covered button, or fires the click directly), `ui_open` / `ui_close` (show one screen in Play In Editor, or push it onto a running CommonUI stack), `ui_input_type` (switch a player to gamepad / mouse and keyboard / touch to check glyphs and focus), `ui_input_audit` (CommonUI input wiring: missing action rows, Enhanced Input actions that never fire, duplicate actions, no input data asset). CommonUI is optional: it is used when the project has it. |
-| Localization | `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets), `stringtable_compare` (source vs translation: missing, extra, empty, untranslated, format argument differences), `loc_culture` (preview another language) |
+| UMG | `widget_create`, `widget_tree`, `widget_get`, `widget_add` (widget + properties + slot layout, checked), `widget_set`, `widget_remove`, `widget_render` (a Widget Blueprint or a C++ UserWidget class to PNG at any resolution, no Play In Editor), `viewmodel_list`, `viewmodel_add`, `viewmodel_bind`, `viewmodel_unbind`, `viewmodel_remove` (MVVM view models and view bindings of a Widget Blueprint; needs the optional EnginewrightMVVM plugin, see below) |
+| Runtime UI (UMG + CommonUI) | `ui_state` (widgets in a player's viewport, CommonUI activatable widgets and stacks, and the buttons the player can use now: visible, on the top page of its stack, with label (the word, not an icon glyph), every text, tooltip, layer, selected state and rectangle; `includeHidden` adds the closed or covered ones with the reason), `ui_key` (a key or mouse button through Slate to the focused widget, for "press any key" panels; can move focus first), `ui_click` (by name, label, any text inside the button or tooltip, so a gear glyph works; refuses a covered button, or fires the click directly), `ui_open` / `ui_close` (show one screen in Play In Editor, or push it onto a running CommonUI stack), `ui_input_type` (switch a player to gamepad / mouse and keyboard / touch to check glyphs and focus), `ui_prompts` (compare the hints on screen with what the input is really bound to: CommonUI action widgets, key-like texts, and a `check` list of {prompt, action} that answers OK / MISMATCH / PROMPT_NOT_SHOWN / ACTION_NOT_BOUND for the current input type), `ui_input_audit` (CommonUI input wiring: missing action rows, Enhanced Input actions that never fire, duplicate actions, no input data asset). CommonUI is optional: it is used when the project has it. |
+| Localization | `loc_gather` / `loc_gather_status` (gather, export, import, compile and check a localization target with the GatherText commandlet while the editor is open; verdict from both exit codes and the log), `stringtable_list`, `stringtable_get`, `stringtable_set` (String Table assets), `stringtable_compare` (source String Table or CSV vs a translation String Table, `.po` or `.locres`: missing, extra, empty, untranslated, format argument / rich text tag differences, translations of an older source text, fuzzy entries), `font_coverage` (characters of a language or a text that a Font asset or a .ttf / .otf cannot draw: empty boxes in the game), `loc_culture` (preview another language in the editor; a game started by `game_run` gets its language from `game_run`'s `culture`) |
 | Gameplay Tags | `gameplay_tags_list`, `gameplay_tag_add` (to a tag ini, strict names), `gameplay_tag_remove` (refused while assets use the tag) |
 | Build and tests | `live_coding_compile`, `editor_restart` (save, close, optionally build C++, reopen), `build_status`, `automation_list`, `automation_run` |
 | Checks | `validate` (compile Blueprints, data validation, broken references, map check), `id_audit` (IDs used but never defined, and the reverse), `key_audit` (hard-coded input keys in C++ and Blueprints), `asset_search_text` |
 | Editor | `editor_state`, `console_command`, `log_read`, `log_wait` (wait for a log line), `settings_get`, `settings_set`, `doctor`, `client_config`, `editor_capture` (the editor window or the Enginewright panel to PNG) |
 | Multi-step | `batch` (atomic, rolls back on failure) |
+
+### Optional: MVVM tools
+
+The `viewmodel_*` tools edit the view models and view bindings of a Widget Blueprint (Epic's UMG Viewmodel plugin). Their code lives in a second plugin, `Plugins/EnginewrightMVVM`, so Enginewright itself loads and works in a project that does not use MVVM, and it never turns the MVVM plugin on for you.
+
+- Without it the tools are still listed, and answer `MVVM_NOT_ENABLED` with the steps below.
+- To use them: unzip `EnginewrightMVVM-<version>-UE5.8-Win64.zip` from the release (or copy `Plugins/EnginewrightMVVM` from this repo) next to `Plugins/Enginewright`, then enable `EnginewrightMVVM` (it enables `ModelViewViewModel`) in Edit > Plugins or in the `Plugins` list of the `.uproject`, and restart the editor. A C++ project builds it with the rest.
 
 ### Optional: compiling while the editor is closed
 
@@ -152,13 +180,22 @@ It runs `RunUAT BuildPlugin` for Win64, checks the result (editor DLL present, n
 
 - **Missing a tool?** Let your own AI agent write the request: paste the prompt from [docs/REQUEST_WITH_AI.md](docs/REQUEST_WITH_AI.md). It checks the existing tools with `search` / `describe` first and fills in the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form.
 - **Found a bug?** Use the [Bug report](https://github.com/shanyup/enginewright/issues/new?template=bug_report.yml) form with your `doctor` output.
+- **Question or rough idea?** Ask in [Discussions](https://github.com/shanyup/enginewright/discussions): [Q&A](https://github.com/shanyup/enginewright/discussions/categories/q-a) for help, [Ideas](https://github.com/shanyup/enginewright/discussions/categories/ideas) for tool ideas that are not a full request yet, [Show and tell](https://github.com/shanyup/enginewright/discussions/categories/show-and-tell) for what you built.
 - **Want to write code?** Start with [CONTRIBUTING.md](CONTRIBUTING.md) (setup, rules for tools, tests) and the [good first issues](https://github.com/shanyup/enginewright/labels/good%20first%20issue).
 
 This is a one-maintainer project in early preview: requests and pull requests are read in order, without promised dates.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+| Version | Status | Main items |
+|---|---|---|
+| 0.4 | done (this release) | Localization loop, game testing tools, save games, scene tools, reliability sweep |
+| 0.4.1 | next | Art pipeline: FBX / LOD / collision import, skeleton bind, IK retarget, sockets, Physics Asset, modular preview, master material and texture settings, animation import with Montage / BlendSpace, art budget check |
+| 0.5 | planned | Behavior Tree / StateTree editing, AnimBP state machines, Mutable (Customizable Object) tools |
+| 0.6 | planned | API freeze: names, arguments and error codes reviewed, no new tools |
+| 1.0.0 | planned | Headless mode, Niagara and Sequencer, UE 5.4-5.8 builds, FAB listing and agent skill, API stability promise |
+
+Details and how requests get onto it: [docs/ROADMAP.md](docs/ROADMAP.md). Requests come in through the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form.
 
 ## License
 

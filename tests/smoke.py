@@ -6,7 +6,11 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ewtest import rpc, call as c, check, done
 
-s, _ = rpc("ping", tok="wrong")
+try:
+    s, _ = rpc("ping", tok="wrong")
+except RuntimeError as e:
+    print(e, file=sys.stderr)
+    sys.exit(2)
 check("auth: wrong token is refused (401)", s == 401, s)
 s, r = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "0"}})
 check("initialize", s == 200 and r["result"]["serverInfo"]["name"] == "enginewright", r)

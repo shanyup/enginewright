@@ -94,7 +94,7 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_get"),
 		TEXT("Read a DataTable: its row struct, the row names, and the values of the rows asked for (or all rows when rows is omitted)."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
 			"rows":{"type":"array","items":{"type":"string"},"description":"Row names to read. Omit for all."},
 			"fields":{"type":"array","items":{"type":"string"},"description":"Field names to read. Omit for all."},
 			"namesOnly":{"type":"boolean","description":"Return only the row names and the field list."}},
@@ -142,9 +142,9 @@ void RegisterDataTableTools(FEWRegistry& R)
 		});
 
 	R.Register(TEXT("datatable_set_rows"),
-		TEXT("Add or update DataTable rows in one step: {rowName: {field: value}}. Fields are checked like object_set (unknown field, type, enum = error). Partial rows keep their other fields. If any row fails, the whole table is restored."),
+		TEXT("Add or update DataTable rows in one step: {rowName: {field: value}}. Fields are checked like object_set (unknown field, type, enum = error). Partial rows keep their other fields. If any row fails, nothing is written."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
 			"rows":{"type":"object","description":"Row name -> object of field values."},
 			"mode":{"type":"string","enum":["upsert","add","update"],"description":"upsert (default): add missing rows, update existing; add: fail if a row exists; update: fail if a row is missing."},
 			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
@@ -178,7 +178,36 @@ void RegisterDataTableTools(FEWRegistry& R)
 				if (Pair.Value->Type != EJson::Object) { return FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Row '%s' must be an object of fields."), *Row)); }
 			}
 
-			const FString Snapshot = DT->GetTableAsJSON();
+			// 1) Validate first: write every row into a temporary buffer and keep it. Nothing touches the table.
+			struct FPendingRow
+			{
+				FString Row;
+				uint8* Buf = nullptr;
+				FEWResult Result;
+			};
+			TArray<FPendingRow> Pending;
+			Pending.Reserve((*Rows)->Values.Num());
+			for (const auto& Pair : (*Rows)->Values)
+			{
+				FPendingRow P;
+				P.Row = FString(*Pair.Key);
+				P.Buf = (uint8*)FMemory::Malloc(RS->GetStructureSize(), RS->GetMinAlignment());
+				RS->InitializeStruct(P.Buf);
+				if (const uint8* Existing = DT->FindRowUnchecked(FName(*P.Row))) { RS->CopyScriptStruct(P.Buf, Existing); }
+				P.Result = EW::WriteValues(RS, P.Buf, nullptr, Pair.Value->AsObject());
+				if (!P.Result.bOk)
+				{
+					FEWResult Fail = P.Result;
+					for (FPendingRow& X : Pending) { RS->DestroyStruct(X.Buf); FMemory::Free(X.Buf); }
+					RS->DestroyStruct(P.Buf);
+					FMemory::Free(P.Buf);
+					Fail.Message = FString::Printf(TEXT("Row '%s': %s Nothing was written."), *P.Row, *Fail.Message);
+					return Fail;
+				}
+				Pending.Add(MoveTemp(P));
+			}
+
+			// 2) Every row passed: write them now in one transaction.
 			FScopedTransaction Tx(FText::FromString(TEXT("Enginewright datatable_set_rows")));
 			DT->Modify();
 			FDataTableEditorUtils::BroadcastPreChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
@@ -186,28 +215,28 @@ void RegisterDataTableTools(FEWRegistry& R)
 			FEWResult Res = FEWResult::Ok();
 			TSharedRef<FJsonObject> AllChanges = MakeShared<FJsonObject>();
 			TArray<TSharedPtr<FJsonValue>> Added;
-			for (const auto& Pair : (*Rows)->Values)
+			for (FPendingRow& P : Pending)
 			{
-				const FName Row(*Pair.Key);
+				const FName Row(*P.Row);
 				uint8* Mem = DT->FindRowUnchecked(Row);
 				if (!Mem)
 				{
 					Mem = FDataTableEditorUtils::AddRow(DT, Row);
 					Added.Add(MakeShared<FJsonValueString>(Row.ToString()));
 				}
-				FEWResult One = Mem ? EW::WriteValues(RS, Mem, nullptr, Pair.Value->AsObject()) : FEWResult::Error(TEXT("ADD_ROW_FAILED"), TEXT("Could not add the row."));
-				if (!One.bOk)
+				if (!Mem)
 				{
-					DT->CreateTableFromJSONString(Snapshot);
+					for (FPendingRow& X : Pending) { RS->DestroyStruct(X.Buf); FMemory::Free(X.Buf); }
 					FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
 					EW::CancelUnlessBatch(Tx);
-					One.Message = FString::Printf(TEXT("Row '%s': %s The table was restored."), *Row.ToString(), *One.Message);
-					return One;
+					return FEWResult::Error(TEXT("ADD_ROW_FAILED"), FString::Printf(TEXT("Row '%s': Could not add the row. Nothing was written."), *P.Row));
 				}
-				Res.Warnings.Append(One.Warnings);
-				AllChanges->SetObjectField(Row.ToString(), One.Data->GetObjectField(TEXT("changes")));
+				RS->CopyScriptStruct(Mem, P.Buf);
+				Res.Warnings.Append(P.Result.Warnings);
+				AllChanges->SetObjectField(P.Row, P.Result.Data->GetObjectField(TEXT("changes")));
 			}
 			FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+			for (FPendingRow& P : Pending) { RS->DestroyStruct(P.Buf); FMemory::Free(P.Buf); }
 
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetObjectField(TEXT("changes"), AllChanges);
@@ -219,9 +248,9 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_remove_rows"),
 		TEXT("Remove DataTable rows. All names must exist, otherwise nothing is removed."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},
-			"rows":{"type":"array","items":{"type":"string"}},
-			"save":{"type":"boolean"}},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
+			"rows":{"type":"array","items":{"type":"string"},"description":"Row names to remove, e.g. [\"Sword\"]."},
+			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
 			"required":["path","rows"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -250,7 +279,10 @@ void RegisterDataTableTools(FEWRegistry& R)
 	R.Register(TEXT("datatable_rename_row"),
 		TEXT("Rename one DataTable row. Note: other assets that store the old name as an ID are not changed; search them with asset text search first."),
 		TEXT(R"({"type":"object","properties":{
-			"path":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"save":{"type":"boolean"}},
+			"path":{"type":"string","description":"DataTable asset path, e.g. /Game/Data/DT_Items."},
+			"from":{"type":"string","description":"Current row name."},
+			"to":{"type":"string","description":"New row name."},
+			"save":{"type":"boolean","description":"Save afterwards (default true)."}},
 			"required":["path","from","to"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult

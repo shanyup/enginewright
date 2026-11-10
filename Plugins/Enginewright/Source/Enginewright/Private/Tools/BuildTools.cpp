@@ -132,6 +132,8 @@ void RegisterBuildTools(FEWRegistry& R)
 			{
 				Bat += FString::Printf(TEXT("echo EW_SKIPPED no build >> \"%s\"\r\n"), *BuildLog());
 			}
+			// Autosave leftovers of a discarded session make the next start show a modal "Restore Packages" dialog that blocks every test.
+			if (EW::Bool(Args, TEXT("discardUnsaved"), false)) { Bat += FString::Printf(TEXT("rd /s /q \"%s\" 2>nul\r\n"), *(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()) / TEXT("Autosaves")).Replace(TEXT("/"), TEXT("\\"))); }
 			if (bReopen) { Bat += FString::Printf(TEXT("start \"\" \"%s\" \"%s\"\r\n"), *Editor.Replace(TEXT("/"), TEXT("\\")), *Project.Replace(TEXT("/"), TEXT("\\"))); }
 			const FString BatFile = BuildDir() / TEXT("restart.bat");
 			if (!FFileHelper::SaveStringToFile(Bat, *BatFile)) { return FEWResult::Error(TEXT("WRITE_FAILED"), TEXT("Could not write the restart script.")); }
@@ -208,7 +210,7 @@ void RegisterBuildTools(FEWRegistry& R)
 	R.RegisterAsync(TEXT("automation_run"),
 		TEXT("Run automation tests whose names start with filter (e.g. Project.MyGame or System.Core.Math) in the editor and return each test's result. Use automation_list to see names."),
 		TEXT(R"({"type":"object","properties":{
-			"filter":{"type":"string"},
+			"filter":{"type":"string","description":"Test name prefix; names that start with it run, e.g. Project.MyGame."},
 			"timeout":{"type":"number","description":"Seconds, default 300."}},
 			"required":["filter"]})"),
 		false,
@@ -277,7 +279,7 @@ void RegisterBuildTools(FEWRegistry& R)
 
 	R.RegisterAsync(TEXT("automation_list"),
 		TEXT("List automation test names that contain filter (e.g. Project., System.Core.Math)."),
-		TEXT(R"({"type":"object","properties":{"filter":{"type":"string"},"limit":{"type":"integer","description":"Default 200."}}})"),
+		TEXT(R"({"type":"object","properties":{"filter":{"type":"string","description":"Substring of the test name; matches anywhere in the name, e.g. Core.Math."},"limit":{"type":"integer","description":"Default 200."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
 		{
