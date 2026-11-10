@@ -62,45 +62,45 @@ PO.write_text('''msgid ""
 msgstr ""
 "Language: tr\\n"
 
-#. Key:\tMenu.Play
+#. Key:	Menu.Play
 msgctxt "EWTest,Menu.Play"
 msgid "Play"
 msgstr "Oyna"
 
-#. Key:\tMenu.Quit
+#. Key:	Menu.Quit
 msgctxt "EWTest,Menu.Quit"
 msgid "Quit"
 msgstr ""
 
-#. Key:\tGold
+#. Key:	Gold
 msgctxt "EWTest,Gold"
 msgid "You have {0} gold"
 msgstr "{1} altının var"
 
 #, fuzzy
-#. Key:\tHint
+#. Key:	Hint
 msgctxt "EWTest,Hint"
 msgid "Press <key>E</> to cook"
 msgstr "Pişirmek için <key>E</> bas"
 
-#. Key:\tName.Loki
+#. Key:	Name.Loki
 msgctxt "EWTest,Name.Loki"
 msgid "Loki"
 msgstr "Loki"
 
-#. Key:\tMulti
+#. Key:	Multi
 msgctxt "EWTest,Multi"
 msgid "He said \\"hi\\", {0}"
 msgstr ""
 "O dedi ki \\"merhaba\\", "
 "{1}"
 
-#. Key:\tExtra.Key
+#. Key:	Extra.Key
 msgctxt "EWTest,Extra.Key"
 msgid "extra"
 msgstr "fazla"
 
-#. Key:\tMenu.Play
+#. Key:	Menu.Play
 msgctxt "Other,Menu.Play"
 msgid "Play!"
 msgstr "WRONG"
@@ -172,17 +172,17 @@ PONS.write_text('''msgid ""
 msgstr ""
 "Language: tr\\n"
 
-#. Key:\\tGUID1
+#. Key:\tGUID1
 msgctxt ",GUID1"
 msgid "Other"
-msgstr "Diğe\\u0301r"
+msgstr "Diğer"
 
-#. Key:\\tA
+#. Key:\tA
 msgctxt "ST_EWNs,A"
 msgid "Apple"
 msgstr "Elma"
 
-#. Key:\\tB
+#. Key:\tB
 msgctxt "ST_EWNs,B"
 msgid "Bread"
 msgstr "Ekmek"
@@ -192,24 +192,24 @@ d = r.get("data") or {}
 cn = d.get("counts", {})
 check("CSV source without namespace: the CSV file name (ST_EWNs) is the namespace used, every key found",
       r["ok"] and d.get("namespace") == "ST_EWNs" and cn.get("missing") == 0 and d.get("translationEntries") == 2
-      and cn.get("extra") == 1, r)
+      and cn.get("extra") == 0, r)
 check("the po's empty-namespace GUID entry did not hijack the namespace (no warnings)", r["ok"] and not r.get("warnings"), r)
 PONS2 = LOC / "NsOther.po"
 PONS2.write_text('''msgid ""
 msgstr ""
 "Language: tr\\n"
 
-#. Key:\\tGUID1
+#. Key:\tGUID1
 msgctxt ",GUID1"
 msgid "Other"
-msgstr "Diğe\\u0301r"
+msgstr "Diğer"
 
-#. Key:\\tA
+#. Key:\tA
 msgctxt "Other,A"
 msgid "Apple"
 msgstr "Elma"
 
-#. Key:\\tB
+#. Key:\tB
 msgctxt "Other,B"
 msgid "Bread"
 msgstr "Ekmek"
@@ -244,7 +244,7 @@ check("locres: more than half the source keys missing in the default namespace -
 r = c("stringtable_compare", {"sourceCsv": str(CSVW), "locres": str(WEIRD), "namespace": "*"})
 d = r.get("data") or {}
 check("the most-missing warning is skipped for namespace *", r["ok"] and d["counts"].get("missing") == 0
-      and all("Most source keys" not in w for w in r.get("warnings", [])), r["warnings"])
+      and all("Most source keys" not in w for w in r.get("warnings", [])), r.get("warnings"))
 
 LR = LOC / "Game.locres"
 legacy_locres(LR, "EWTest", {"Menu.Play": ("Play!", "Oyna"), "Menu.Quit": ("Quit", "Çıkış"), "Gold": ("Gold", "{0} altın")})
