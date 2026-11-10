@@ -8,6 +8,7 @@
 #include "GameplayTagsEditorModule.h"
 #include "GameplayTagsManager.h"
 #include "HAL/FileManager.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
@@ -217,6 +218,17 @@ void RegisterGameplayTagTools(FEWRegistry& R)
 				bool bHasTag = false;
 				for (const FString& L : Lines) { if (L.StartsWith(TEXT("+GameplayTagList="))) { bHasTag = true; break; } }
 				if (bHasTag) { continue; }
+				// Drop the file from the config cache so the editor does not write it again at exit.
+				TArray<FString> CacheNames;
+				for (const FString& Name : GConfig->GetFilenames())
+				{
+					if (FPaths::IsSamePath(FPaths::ConvertRelativePathToFull(Name), FPaths::ConvertRelativePathToFull(File))) { CacheNames.Add(Name); }
+				}
+				for (const FString& Name : CacheNames)
+				{
+					GConfig->Flush(/*bRemoveFromCache*/ true, Name);
+					GConfig->Remove(Name);
+				}
 				if (IFileManager::Get().Delete(*File))
 				{
 					RemovedFiles.Add(File);
