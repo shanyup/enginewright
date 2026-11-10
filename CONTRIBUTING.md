@@ -9,6 +9,13 @@ Ways to help:
 - **Pick a [good first issue](https://github.com/shanyup/enginewright/labels/good%20first%20issue).** Each one names the files to touch, the test to extend and when it is done.
 - **Send a pull request.** For a new tool, open a request first so we agree on the name and arguments before you write code.
 
+## How a request gets onto the roadmap
+
+1. Open a Tool request (your AI agent can fill it in, see [docs/REQUEST_WITH_AI.md](docs/REQUEST_WITH_AI.md)). It gets the `request` label.
+2. The maintainer answers within the issue: questions get `needs-info`; an accepted request gets `accepted` and `roadmap` and a target version in [docs/ROADMAP.md](docs/ROADMAP.md) "Requests".
+3. It is built on the `dev` branch (or by your pull request, see below) and ships in that version; the release notes link the issue.
+4. Requests that do not fit stay open as ideas and can move later.
+
 ## Development setup
 
 You need Unreal Engine 5.8 on Windows (the only tested platform so far), a Visual Studio version that UE 5.8 supports, with the C++ game development workload (the maintainer builds with Visual Studio 2026), Git, and Python 3 for the tests (standard library only).

@@ -1,6 +1,6 @@
 # Enginewright
 
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](docs/release-notes/v0.3.1.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](docs/release-notes/v0.4.0.md)
 [![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.8-black)](#supported-versions)
 [![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)](#supported-versions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -11,7 +11,21 @@ An Unreal Engine editor plugin that runs a [Model Context Protocol](https://mode
 
 *Above: an agent calls Enginewright tools on a fresh UE 5.8 project. It creates a menu widget and checks each change with `widget_render`, starts Play In Editor, opens the menu, reads the buttons with `ui_state`, clicks Play, and gets `COVERED` when it tries a button that another widget draws over.*
 
-> **Early preview (v0.3).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.3.1 release notes](docs/release-notes/v0.3.1.md).
+> **Early preview (v0.4).** One maintainer, APIs may change before 1.0. Use it on a project under version control and review what it changes. See the [v0.4.0 release notes](docs/release-notes/v0.4.0.md). Changes: [CHANGELOG.md](CHANGELOG.md). Supported Unreal features: [docs/SUPPORT.md](docs/SUPPORT.md).
+
+## What's new in 0.4.0
+
+- Localization loop: `loc_gather` takes a target through gather, compile and check while the editor is open, `stringtable_compare` reads `.po` and `.locres` files, `game_run` takes a `culture`, and `font_coverage` plus `game_run` `glyphMisses` find characters that would show as empty boxes.
+- Game testing: `ui_key`, `pie_walk_to` and `pie_travel` drive a running game, `ui_state` shows only what the player can use, and `ui_prompts` with `input_map_list` compares the on-screen hints with the real bindings.
+- Game runs and images: `game_run` takes `shotNames`, `cvars` and `variants`, and `image_stats` reports the brightness, histogram and difference of each screenshot.
+- Save games: `savegame_get` and `savegame_set` read and write a slot by reflection, and a slot with a game checksum is refused unless the game's own save function is passed.
+- Scene tools: `scene_dress` places hundreds of meshes in one undo step, and `actor_preview` photographs an actor class without Play In Editor.
+- MVVM: `viewmodel_*` tools edit view models and bindings, in an optional plugin.
+- Reliability sweep: every tool was run on a real game project (RagnaCook) with 11 fixes, see [docs/RELIABILITY_0.4.md](docs/RELIABILITY_0.4.md).
+
+<!-- WHATS_NEW_MEDIA -->
+
+Full notes: [v0.4.0 release notes](docs/release-notes/v0.4.0.md).
 
 ## Why
 
@@ -166,7 +180,15 @@ This is a one-maintainer project in early preview: requests and pull requests ar
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+| Version | Status | Main items |
+|---|---|---|
+| 0.4 | done (this release) | Localization loop, game testing tools, save games, scene tools, reliability sweep |
+| 0.4.1 | next | Art pipeline: FBX / LOD / collision import, skeleton bind, IK retarget, sockets, Physics Asset, modular preview, master material and texture settings, animation import with Montage / BlendSpace, art budget check |
+| 0.5 | planned | Behavior Tree / StateTree editing, AnimBP state machines, Mutable (Customizable Object) tools |
+| 0.6 | planned | API freeze: names, arguments and error codes reviewed, no new tools |
+| 1.0.0 | planned | Headless mode, Niagara and Sequencer, UE 5.4-5.8 builds, FAB listing and agent skill, API stability promise |
+
+Details and how requests get onto it: [docs/ROADMAP.md](docs/ROADMAP.md). Requests come in through the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form.
 
 ## License
 
