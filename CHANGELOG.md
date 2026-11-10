@@ -24,6 +24,7 @@ Release notes: [docs/release-notes/v0.4.0.md](docs/release-notes/v0.4.0.md)
 - Scene tools: `scene_dress`, `actor_preview`.
 - Editor panel: the version label and the "What's new / Roadmap" and "Changelog" buttons.
 - `docs/SUPPORT.md` (Unreal feature support matrix), `CHANGELOG.md`, the roadmap Requests section and the request flow in CONTRIBUTING.md.
+- GitHub Discussions (Announcements, Ideas, Q&A, Show and tell); the issue chooser links questions and rough ideas there.
 - Release: the optional MVVM plugin as its own zip, `EnginewrightMVVM-0.4.0-UE5.8-Win64.zip`.
 
 ### Changed

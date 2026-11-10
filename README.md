@@ -180,6 +180,7 @@ It runs `RunUAT BuildPlugin` for Win64, checks the result (editor DLL present, n
 
 - **Missing a tool?** Let your own AI agent write the request: paste the prompt from [docs/REQUEST_WITH_AI.md](docs/REQUEST_WITH_AI.md). It checks the existing tools with `search` / `describe` first and fills in the [Tool request](https://github.com/shanyup/enginewright/issues/new?template=feature_request.yml) form.
 - **Found a bug?** Use the [Bug report](https://github.com/shanyup/enginewright/issues/new?template=bug_report.yml) form with your `doctor` output.
+- **Question or rough idea?** Ask in [Discussions](https://github.com/shanyup/enginewright/discussions): [Q&A](https://github.com/shanyup/enginewright/discussions/categories/q-a) for help, [Ideas](https://github.com/shanyup/enginewright/discussions/categories/ideas) for tool ideas that are not a full request yet, [Show and tell](https://github.com/shanyup/enginewright/discussions/categories/show-and-tell) for what you built.
 - **Want to write code?** Start with [CONTRIBUTING.md](CONTRIBUTING.md) (setup, rules for tools, tests) and the [good first issues](https://github.com/shanyup/enginewright/labels/good%20first%20issue).
 
 This is a one-maintainer project in early preview: requests and pull requests are read in order, without promised dates.

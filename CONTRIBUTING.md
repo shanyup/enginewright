@@ -16,6 +16,8 @@ Ways to help:
 3. It is built on the `dev` branch (or by your pull request, see below) and ships in that version; the release notes link the issue.
 4. Requests that do not fit stay open as ideas and can move later.
 
+Not sure yet, or just a question? Start in [GitHub Discussions](https://github.com/shanyup/enginewright/discussions) (Ideas or Q&A). A discussed idea can become a Tool request later.
+
 ## Development setup
 
 You need Unreal Engine 5.8 on Windows (the only tested platform so far), a Visual Studio version that UE 5.8 supports, with the C++ game development workload (the maintainer builds with Visual Studio 2026), Git, and Python 3 for the tests (standard library only).
