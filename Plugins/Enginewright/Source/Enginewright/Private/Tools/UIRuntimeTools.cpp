@@ -232,7 +232,10 @@ namespace
 		TArray<FString> Out;
 		CollectTexts(W, Out);
 		if (Out.Num() == 0 && W) { CollectSlateTexts(W->GetCachedWidget(), Out); }
-		return Out;
+		// Styled buttons draw a text several times (shadow, outline, copies): list each text once, in first-seen order.
+		TArray<FString> Unique;
+		for (const FString& T : Out) { Unique.AddUnique(T); }
+		return Unique;
 	}
 
 	/** The tooltip text set on the widget (or on the UButton inside it). */

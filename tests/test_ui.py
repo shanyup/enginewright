@@ -32,6 +32,7 @@ ok(c("widget_add", {"path": CLICK, "class": "Button", "name": "GlyphButton", "sl
 ok(c("widget_add", {"path": CLICK, "class": "HorizontalBox", "name": "GlyphRow", "parent": "GlyphButton"}), "glyph row")
 ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "GlyphIcon", "parent": "GlyphRow", "properties": {"Text": "⚙"}}), "glyph icon")
 ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "GlyphWord", "parent": "GlyphRow", "properties": {"Text": "Settings"}}), "glyph word")
+ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "GlyphWordShadow", "parent": "GlyphRow", "properties": {"Text": "Settings"}}), "glyph word, drawn again")
 ok(c("widget_add", {"path": CLICK, "class": "Image", "name": "Cover", "slot": {"position": [380, 80], "size": [260, 140]}}), "cover")
 
 # --- CommonUI assets with the generic tools
@@ -109,7 +110,7 @@ check("ui_click method event fires it anyway", r["ok"] and r["data"]["clicked"][
 # --- ER-25: label is the word, text lists the glyph too, tooltip, click by glyph / tooltip / word
 gb = [b for b in c("ui_state")["data"]["buttons"] if b["name"] == "GlyphButton"]
 check("ui_state: a glyph-first button has the word as label", len(gb) == 1 and gb[0]["label"] == "Settings", gb)
-check("ui_state: text lists every text in drawing order (glyph first)", len(gb) == 1 and gb[0]["text"] == ["⚙", "Settings"], gb)
+check("ui_state: text lists every text in drawing order (glyph first), a repeated text once", len(gb) == 1 and gb[0]["text"] == ["⚙", "Settings"], gb)
 check("ui_state: tooltip is reported", len(gb) == 1 and gb[0].get("tooltip") == "Open settings", gb)
 check("ui_state: a plain button has text [label] and no tooltip", btn["OK"]["text"] == ["OK"] and "tooltip" not in btn["OK"], btn["OK"])
 for key in ("⚙", "Open settings", "Settings", "*settings*"):
