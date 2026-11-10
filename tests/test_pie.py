@@ -1,4 +1,4 @@
-"""Play In Editor tests: start/stop, state, game camera screenshot, synthetic input, pie_walk_to, log wait,
+"""Play In Editor tests: start/stop, state, game camera screenshot, synthetic input, pie_walk_to, pie_travel, log wait,
 console commands per player, and a 2-player listen-server session.
 
 Needs a running editor on ENGINEWRIGHT_TEST_PROJECT whose open level has a player start or default pawn.
@@ -21,6 +21,8 @@ check("game screenshot without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"]
 r = c("pie_input", {"key": "SpaceBar"})
 check("pie_input without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 
+r = c("pie_travel", {"map": "/Engine/Maps/Templates/Template_Default"})
+check("pie_travel without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 r = c("pie_walk_to", {"x": 0, "y": 0})
 check("pie_walk_to without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 
@@ -108,6 +110,40 @@ r = c("pie_input", {"key": "W", "action": "/Game/X"})
 check("key and action together -> error", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 r = c("pie_input", {"key": "W", "player": 3})
 check("missing player index -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
+
+# --- pie_travel (ER-26): a map plus URL options, checked; waits until the new map is loaded
+TRAVEL = "/Engine/Maps/Templates/Template_Default"
+r = c("pie_travel", {"map": ""})
+check("pie_travel empty map -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_travel", {})
+check("pie_travel without map -> MISSING_ARGUMENT", not r["ok"] and r["errorCode"] == "MISSING_ARGUMENT", r)
+r = c("pie_travel", {"map": "Template_Defaul"})
+check("pie_travel unknown map -> MAP_NOT_FOUND with the closest name", not r["ok"] and r["errorCode"] == "MAP_NOT_FOUND" and "Template_Default" in r.get("suggestions", []), r)
+r = c("pie_travel", {"map": "/Game/NoSuchMap"})
+check("pie_travel unknown map path -> MAP_NOT_FOUND", not r["ok"] and r["errorCode"] == "MAP_NOT_FOUND", r)
+r = c("pie_travel", {"map": TRAVEL, "options": "?bad option"})
+check("pie_travel option with a space -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT" and "bad option" in r["message"], r)
+r = c("pie_travel", {"map": TRAVEL, "options": "?=x"})
+check("pie_travel option without a key -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_travel", {"map": TRAVEL, "timeout": 0})
+check("pie_travel timeout 0 -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_travel", {"map": "Template_Default", "options": "?listen"}, timeout=240)
+d = r.get("data") or {}
+w0 = (d.get("worlds") or [{}])[0]
+check("pie_travel by map name + ?listen: loads the map, URL reported, pawn ready", r["ok"] and d["travelUrl"] == TRAVEL + "?listen" and d["waited"] is True
+      and w0.get("map", "").endswith("Template_Default") and d["localPlayersWithPawn"] >= 1 and d["seconds"] > 0, r)
+check("pie_travel: the ?listen option took effect (the world is a listen server now)", w0.get("netMode") == "listenServer", w0)
+r = c("pie_travel", {"map": TRAVEL, "options": "listen,foo=1"}, timeout=240)
+d = r.get("data") or {}
+check("pie_travel: options without ? and with a comma are normalised (travel to the same map again)", r["ok"] and d.get("travelUrl") == TRAVEL + "?listen?foo=1"
+      and d["worlds"][0]["map"].endswith("Template_Default") and d["localPlayersWithPawn"] >= 1, r)
+r = c("pie_travel", {"map": TRAVEL, "wait": False})
+check("pie_travel wait false returns at once with the URL", r["ok"] and r["data"]["travelUrl"] == TRAVEL and r["data"]["waited"] is False, r)
+time.sleep(2)
+n = 0
+while n < 60 and not (c("pie_state")["data"].get("localPlayersWithPawn", 0) >= 1 and c("pie_state")["data"]["worlds"][0]["timeSeconds"] < 20):
+    time.sleep(1); n += 1
+check("pie_travel wait false: the map is up a moment later", n < 60, n)
 
 r = c("pie_stop")
 check("pie_stop waits until stopped", r["ok"] and not c("editor_state")["data"]["playing"], r)

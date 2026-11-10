@@ -27,6 +27,11 @@ ok(c("widget_add", {"path": CLICK, "class": "Button", "name": "OkButton", "slot"
 ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "OkLabel", "parent": "OkButton", "properties": {"Text": "OK"}}), "ok label")
 ok(c("widget_add", {"path": CLICK, "class": "Button", "name": "UnderButton", "slot": {"position": [400, 100], "size": [200, 80]}}), "under button")
 ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "UnderLabel", "parent": "UnderButton", "properties": {"Text": "Under"}}), "under label")
+# ER-25: a button whose first text is an icon glyph; the word and a tooltip come after it
+ok(c("widget_add", {"path": CLICK, "class": "Button", "name": "GlyphButton", "slot": {"position": [100, 300], "size": [260, 80]}, "properties": {"ToolTipText": "Open settings"}}), "glyph button")
+ok(c("widget_add", {"path": CLICK, "class": "HorizontalBox", "name": "GlyphRow", "parent": "GlyphButton"}), "glyph row")
+ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "GlyphIcon", "parent": "GlyphRow", "properties": {"Text": "⚙"}}), "glyph icon")
+ok(c("widget_add", {"path": CLICK, "class": "TextBlock", "name": "GlyphWord", "parent": "GlyphRow", "properties": {"Text": "Settings"}}), "glyph word")
 ok(c("widget_add", {"path": CLICK, "class": "Image", "name": "Cover", "slot": {"position": [380, 80], "size": [260, 140]}}), "cover")
 
 # --- CommonUI assets with the generic tools
@@ -79,6 +84,8 @@ else:
     check("CommonUI plugin is enabled in the test project (CommonUI checks skipped)", False, common)
 
 # --- Play In Editor
+r = c("ui_prompts")
+check("ui_prompts without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 r = c("ui_state")
 check("ui_state without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 r = c("ui_key", {"key": "Enter"})
@@ -99,6 +106,15 @@ r = c("ui_click", {"button": "OK", "method": "tap"})
 check("ui_click bad method -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 r = c("ui_click", {"button": "Under", "method": "event"})
 check("ui_click method event fires it anyway", r["ok"] and r["data"]["clicked"]["method"] == "event", r)
+# --- ER-25: label is the word, text lists the glyph too, tooltip, click by glyph / tooltip / word
+gb = [b for b in c("ui_state")["data"]["buttons"] if b["name"] == "GlyphButton"]
+check("ui_state: a glyph-first button has the word as label", len(gb) == 1 and gb[0]["label"] == "Settings", gb)
+check("ui_state: text lists every text in drawing order (glyph first)", len(gb) == 1 and gb[0]["text"] == ["⚙", "Settings"], gb)
+check("ui_state: tooltip is reported", len(gb) == 1 and gb[0].get("tooltip") == "Open settings", gb)
+check("ui_state: a plain button has text [label] and no tooltip", btn["OK"]["text"] == ["OK"] and "tooltip" not in btn["OK"], btn["OK"])
+for key in ("⚙", "Open settings", "Settings", "*settings*"):
+    r = c("ui_click", {"button": key})
+    check(f"ui_click by {key!r} finds the glyph button", r["ok"] and r["data"]["clicked"]["name"] == "GlyphButton" and r["data"]["clicked"]["label"] == "Settings", r)
 r = c("ui_click", {"button": "Nope"})
 check("ui_click unknown -> BUTTON_NOT_FOUND with suggestions", not r["ok"] and r["errorCode"] == "BUTTON_NOT_FOUND" and r.get("suggestions"), r)
 r = c("ui_click", {"button": "*"})
@@ -159,6 +175,11 @@ if common["ok"]:
     labels = {b["label"]: b for b in d.get("buttons", [])}
     check("CommonUI: CommonButtonBase listed once with its label", "Go" in labels and labels["Go"]["class"].startswith("WBP_EWCButton")
           and sum(1 for b in d.get("buttons", []) if b["name"] == "GoButton") == 1, d.get("buttons"))
+    # --- ER-27: ui_prompts lists the CommonUI action widgets on screen (read-only)
+    r = c("ui_prompts")
+    pd = r.get("data") or {}
+    check("ui_prompts answers while a CommonUI page is open", r["ok"] and isinstance(pd.get("actionWidgets"), list) and isinstance(pd.get("keyTexts"), list)
+          and pd.get("device") in ("keyboardMouse", "gamepad", "touch") and pd.get("inputType") in ("MouseAndKeyboard", "Gamepad", "Touch"), r)
     r = c("ui_click", {"button": "GoButton"})
     go = [b for b in (r.get("data") or {}).get("buttons", []) if b["name"] == "GoButton"]
     check("CommonUI: click a CommonButtonBase (toggle is now selected)", r["ok"] and r["data"]["clicked"]["name"] == "GoButton" and go and go[0].get("selected") is True, r)
@@ -212,6 +233,12 @@ if common["ok"]:
     st = (c("ui_state").get("data") or {}).get("stacks", [])
     check("CommonUI: the stack is empty again", any(s["name"] == "Stack" and s["widgets"] == [] for s in st), st)
     c("ui_close", {"widget": "WBP_EWHost"})
+r = c("ui_prompts", {"check": [{"prompt": "B"}]})
+check("ui_prompts check entry without action -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("ui_prompts", {"check": [{"prompt": "B", "action": "IA_X", "extra": 1}]})
+check("ui_prompts check entry with an unknown key -> UNKNOWN_ARGUMENT", not r["ok"] and r["errorCode"] == "UNKNOWN_ARGUMENT", r)
+r = c("ui_prompts", {"check": [{"prompt": "Q", "action": "IA_NotBound"}], "device": "gamepad"})
+check("ui_prompts: an action nothing binds -> ACTION_NOT_BOUND, allOk false", r["ok"] and r["data"]["checks"][0]["status"] == "ACTION_NOT_BOUND" and r["data"]["allOk"] is False and r["data"]["problems"] == 1 and r["data"]["device"] == "gamepad", r)
 r = c("ui_open", {"class": "StaticMeshActor"})
 check("ui_open non-widget -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
 c("pie_stop")

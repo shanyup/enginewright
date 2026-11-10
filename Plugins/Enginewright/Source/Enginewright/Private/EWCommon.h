@@ -7,6 +7,7 @@
 
 class UWorld;
 class APlayerController;
+struct FEnhancedActionKeyMapping;
 
 namespace EW
 {
@@ -60,6 +61,11 @@ namespace EW
 	TArray<UWorld*> PieWorlds();
 	/** Player controller of PIE player Index (0 = first). Null with OutError when missing. */
 	APlayerController* PiePlayer(int32 Index, FString& OutError);
+
+	/** The Enhanced Input mappings a Play In Editor player has right now (live, runtime remaps included). False when the player has no Enhanced Input. */
+	bool PlayerInputMappings(APlayerController* PC, TArray<FEnhancedActionKeyMapping>& Out);
+	/** Input mapping contexts applied to the player as (asset path, priority), highest priority first. */
+	TArray<TPair<FString, int32>> PlayerInputContexts(APlayerController* PC);
 
 	/** True when an asset already lives at this package path: on disk, or in memory and not deleted. */
 	bool AssetPathTaken(const FString& PackagePath);

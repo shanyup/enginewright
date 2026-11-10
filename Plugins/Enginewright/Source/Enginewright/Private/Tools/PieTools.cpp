@@ -1,6 +1,8 @@
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Containers/Ticker.h"
 #include "GameFramework/PawnMovementComponent.h"
@@ -24,6 +26,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "UnrealClient.h"
@@ -472,6 +475,100 @@ void RegisterPieTools(FEWRegistry& R)
 				}
 				return true;
 			}));
+		});
+
+	R.RegisterAsync(TEXT("pie_travel"),
+		TEXT("Travel a running Play In Editor session to another map with URL options, like the ServerTravel console command but checked: map is a map asset path (/Game/Maps/MAP_Run) or a map name; options is the URL option string (?game=/Script/MyGame.MyGameMode?listen, or game=...,listen=...). The map must exist (MAP_NOT_FOUND with the closest names), options must be Key or Key=Value pairs without spaces. It travels the server (or standalone) world, then waits until the new map is loaded and every local player has a pawn (wait false returns right after the travel starts). Returns the travel URL and the Play In Editor state. Use pie_start to start a session and pie_state to read the map."),
+		TEXT(R"({"type":"object","properties":{
+			"map":{"type":"string","description":"Map asset path like /Game/Maps/MAP_Run, or just the map name."},
+			"options":{"type":"string","description":"URL options, e.g. ?game=/Script/RagnaCook.RC_RunGameMode?listen (a leading ? and ? or , between options are accepted)."},
+			"wait":{"type":"boolean","description":"Wait until the new map has loaded and every local player has a pawn (default true)."},
+			"timeout":{"type":"number","description":"Seconds to wait, default 60, max 600."}},
+			"required":["map"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			if (!EW::IsPlaying()) { Done(FEWResult::Error(TEXT("NO_PLAYER"), TEXT("Play In Editor is not running (pie_start first)."))); return; }
+			const FString MapArg = EW::Str(Args, TEXT("map")).TrimStartAndEnd();
+			if (MapArg.IsEmpty()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("map must not be empty."))); return; }
+			const float Timeout = (float)EW::Num(Args, TEXT("timeout"), 60);
+			if (Timeout <= 0.f || Timeout > 600.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout must be above 0 and at most 600 seconds."))); return; }
+
+			// The map must exist: match the package path, or the short name, among the map assets.
+			FString MapPackage = MapArg;
+			MapPackage.RemoveFromEnd(TEXT(".umap"));
+			if (int32 Dot; MapPackage.FindChar(TEXT('.'), Dot)) { MapPackage.LeftInline(Dot); }
+			TArray<FString> Maps;
+			{
+				TArray<FAssetData> Found;
+				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), Found, /*bSearchSubClasses*/ true);
+				for (const FAssetData& A : Found) { Maps.AddUnique(A.PackageName.ToString()); }
+				Maps.Sort();
+			}
+			FString Found;
+			TArray<FString> Short;
+			for (const FString& M : Maps)
+			{
+				const FString Name = FPackageName::GetShortName(M);
+				Short.Add(Name);
+				if (M.Equals(MapPackage, ESearchCase::IgnoreCase) || (!MapPackage.Contains(TEXT("/")) && Name.Equals(MapPackage, ESearchCase::IgnoreCase))) { if (Found.IsEmpty()) { Found = M; } else if (!Found.Equals(M)) { Done(FEWResult::Error(TEXT("AMBIGUOUS"), FString::Printf(TEXT("Several maps are named '%s': %s and %s. Pass the full path."), *MapPackage, *Found, *M))); return; } }
+			}
+			if (Found.IsEmpty()) { Done(FEWResult::Error(TEXT("MAP_NOT_FOUND"), FString::Printf(TEXT("No map '%s'. Pass a map asset path such as /Game/Maps/MAP_Run."), *MapArg), EW::Suggest(FPackageName::GetShortName(MapPackage), Short))); return; }
+
+			// Options: normalise to ?Key=Value?Key.
+			FString Opt = EW::Str(Args, TEXT("options")).TrimStartAndEnd();
+			Opt.ReplaceInline(TEXT(","), TEXT("?"));
+			TArray<FString> Tokens;
+			Opt.ParseIntoArray(Tokens, TEXT("?"), true);
+			FString Url = Found;
+			for (const FString& T : Tokens)
+			{
+				FString Key = T, Val;
+				T.Split(TEXT("="), &Key, &Val);
+				bool bBad = Key.IsEmpty();
+				for (const TCHAR C : Key) { if (!FChar::IsAlnum(C) && C != TEXT('_') && C != TEXT('-')) { bBad = true; } }
+				for (const TCHAR C : T) { if (FChar::IsWhitespace(C)) { bBad = true; } }
+				if (bBad) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Bad option '%s': use Key or Key=Value without spaces, joined by ? (e.g. ?game=/Script/MyGame.MyMode?listen)."), *T))); return; }
+				Url += TEXT("?") + T;
+			}
+
+			UWorld* Server = EW::PieWorlds().Num() ? EW::PieWorlds()[0] : nullptr;
+			if (!Server || !Server->GetAuthGameMode()) { Done(FEWResult::Error(TEXT("NO_AUTHORITY"), TEXT("The first Play In Editor world has no game mode, so it cannot travel (in a client-only session travel from the server)."))); return; }
+			const TWeakObjectPtr<UWorld> OldWorld = Server;
+			const FString ShortMap = FPackageName::GetShortName(Found);
+			if (!Server->ServerTravel(Url, /*bAbsolute*/ false))
+			{
+				Done(FEWResult::Error(TEXT("TRAVEL_FAILED"), FString::Printf(TEXT("ServerTravel('%s') was refused (a travel may already be running)."), *Url))); return;
+			}
+			TSharedRef<FJsonObject> Info = MakeShared<FJsonObject>();
+			Info->SetStringField(TEXT("travelUrl"), Url);
+			if (!EW::Bool(Args, TEXT("wait"), true))
+			{
+				Info->SetBoolField(TEXT("waited"), false);
+				Done(FEWResult::Ok(Info, TEXT("Travel started; poll pie_state."))); return;
+			}
+			const double T0 = FPlatformTime::Seconds();
+			EW::PollUntil(Timeout,
+				[Done, Info, OldWorld, ShortMap, T0]() -> bool
+				{
+					const TArray<UWorld*> Worlds = EW::PieWorlds();
+					if (!EW::IsPlaying() || Worlds.Num() == 0 || Worlds[0] == OldWorld.Get() || !Worlds[0]->GetMapName().EndsWith(ShortMap)) { return false; }
+					if (LocalPlayerCount() < 1) { return false; }
+					TSharedRef<FJsonObject> D = PieState();
+					D->SetStringField(TEXT("travelUrl"), Info->GetStringField(TEXT("travelUrl")));
+					D->SetBoolField(TEXT("waited"), true);
+					D->SetNumberField(TEXT("seconds"), FMath::RoundToDouble((FPlatformTime::Seconds() - T0) * 10) / 10);
+					Done(FEWResult::Ok(D, TEXT("Travelled; the new map is loaded.")));
+					return true;
+				},
+				[Done, Info, ShortMap]()
+				{
+					FEWResult Res = FEWResult::Error(TEXT("TIMEOUT"), FString::Printf(TEXT("The map %s did not finish loading with a player pawn in time. data has the Play In Editor state; log_read shows load errors."), *ShortMap));
+					TSharedRef<FJsonObject> D = PieState();
+					D->SetStringField(TEXT("travelUrl"), Info->GetStringField(TEXT("travelUrl")));
+					Res.Data = D;
+					Done(Res);
+				});
 		});
 
 	R.Register(TEXT("screenshot"),

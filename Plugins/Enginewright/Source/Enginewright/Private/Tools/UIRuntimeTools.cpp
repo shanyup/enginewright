@@ -13,6 +13,11 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "EnhancedActionKeyMapping.h"
+#include "EnhancedInputSubsystems.h"
+#include "EnhancedPlayerInput.h"
+#include "InputAction.h"
+#include "Misc/PackageName.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
 #include "UObject/StructOnScope.h"
 #include "WidgetBlueprint.h"
@@ -24,6 +29,7 @@
 #include "Layout/WidgetPath.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 
@@ -187,15 +193,53 @@ namespace
 		return nullptr;
 	}
 
-	FString Label(UWidget* W, int32 Depth = 0)
+	/** Every text of the widget in drawing order: TextBlocks (CommonTextBlock too) under UMG panels, buttons and user widgets. */
+	void CollectTexts(UWidget* W, TArray<FString>& Out, int32 Depth = 0)
 	{
-		if (!W || Depth > 12) { return FString(); }
-		if (UTextBlock* T = Cast<UTextBlock>(W)) { return T->GetText().ToString(); }
+		if (!W || Depth > 12) { return; }
+		if (UTextBlock* T = Cast<UTextBlock>(W)) { const FString S = T->GetText().ToString(); if (!S.IsEmpty()) { Out.Add(S); } return; }
 		if (UPanelWidget* P = Cast<UPanelWidget>(W))
 		{
-			for (int32 i = 0; i < P->GetChildrenCount(); ++i) { const FString L = Label(P->GetChildAt(i), Depth + 1); if (!L.IsEmpty()) { return L; } }
+			for (int32 i = 0; i < P->GetChildrenCount(); ++i) { CollectTexts(P->GetChildAt(i), Out, Depth + 1); }
 		}
-		if (UUserWidget* U = Cast<UUserWidget>(W)) { if (U->WidgetTree) { return Label(U->WidgetTree->RootWidget, Depth + 1); } }
+		if (UUserWidget* U = Cast<UUserWidget>(W)) { if (U->WidgetTree) { CollectTexts(U->WidgetTree->RootWidget, Out, Depth + 1); } }
+	}
+
+	/** Fallback for widgets whose texts are not in a UMG tree: the STextBlocks of the built Slate widget. */
+	void CollectSlateTexts(const TSharedPtr<SWidget>& W, TArray<FString>& Out, int32 Depth = 0)
+	{
+		if (!W.IsValid() || Depth > 16) { return; }
+		if (W->GetType() == FName(TEXT("STextBlock"))) { const FString S = StaticCastSharedPtr<STextBlock>(W)->GetText().ToString(); if (!S.IsEmpty()) { Out.Add(S); } }
+		FChildren* Kids = W->GetChildren();
+		for (int32 k = 0; Kids && k < Kids->Num(); ++k) { CollectSlateTexts(Kids->GetChildAt(k), Out, Depth + 1); }
+	}
+
+	bool HasLetterOrDigit(const FString& S)
+	{
+		for (const TCHAR C : S) { if (FChar::IsAlnum(C)) { return true; } }
+		return false;
+	}
+
+	/** The label of a button: the first text with a letter or digit. An icon or glyph character (a gear, a play triangle) is used only when there is nothing else. */
+	FString PickLabel(const TArray<FString>& Texts)
+	{
+		for (const FString& T : Texts) { if (HasLetterOrDigit(T)) { return T; } }
+		return Texts.Num() ? Texts[0] : FString();
+	}
+
+	TArray<FString> AllTexts(UWidget* W)
+	{
+		TArray<FString> Out;
+		CollectTexts(W, Out);
+		if (Out.Num() == 0 && W) { CollectSlateTexts(W->GetCachedWidget(), Out); }
+		return Out;
+	}
+
+	/** The tooltip text set on the widget (or on the UButton inside it). */
+	FString Tooltip(UWidget* W, UWidget* Inner = nullptr)
+	{
+		if (W && !W->ToolTipText.IsEmpty()) { return W->ToolTipText.ToString(); }
+		if (Inner && !Inner->ToolTipText.IsEmpty()) { return Inner->ToolTipText.ToString(); }
 		return FString();
 	}
 
@@ -214,7 +258,9 @@ namespace
 	{
 		UWidget* Widget = nullptr;   // UButton or CommonButtonBase
 		UButton* Clickable = nullptr; // the UButton that fires the click (CommonButtonBase: its internal button)
-		FString Label;
+		FString Label;                // the first text with a letter or digit
+		TArray<FString> Texts;        // every text inside the button, in drawing order (an icon glyph may come first)
+		FString Tooltip;
 		FString Owner;
 		FString Layer = TEXT("viewport"); // the activatable stack that holds the page, or "viewport" for a plain widget
 		bool bTop = true;                 // false: the page is deactivated or sits below another page of its stack
@@ -273,7 +319,9 @@ namespace
 			I.Widget = (CBB && OwnerWidget && OwnerWidget->IsA(CBB)) ? (UWidget*)OwnerWidget : (UWidget*)B;
 			if (Seen.Contains(I.Widget)) { continue; }
 			Seen.Add(I.Widget);
-			I.Label = Label(I.Widget);
+			I.Texts = AllTexts(I.Widget);
+			I.Label = PickLabel(I.Texts);
+			I.Tooltip = Tooltip(I.Widget, I.Clickable);
 			UUserWidget* Page = I.Widget->GetTypedOuter<UUserWidget>();
 			I.Owner = Page ? Page->GetClass()->GetName() : FString();
 			Classify(I.Widget, Stacks, I.Layer, I.bTop, I.HiddenReason);
@@ -427,6 +475,10 @@ namespace
 			J->SetStringField(TEXT("name"), B.Widget->GetName());
 			J->SetStringField(TEXT("class"), B.Widget->GetClass()->GetName());
 			J->SetStringField(TEXT("label"), B.Label);
+			TArray<TSharedPtr<FJsonValue>> TextJ;
+			for (const FString& T : B.Texts) { TextJ.Add(MakeShared<FJsonValueString>(T)); }
+			J->SetArrayField(TEXT("text"), TextJ);
+			if (!B.Tooltip.IsEmpty()) { J->SetStringField(TEXT("tooltip"), B.Tooltip); }
 			J->SetStringField(TEXT("page"), B.Owner);
 			J->SetStringField(TEXT("layer"), B.Layer);
 			J->SetBoolField(TEXT("top"), B.bTop);
@@ -444,12 +496,226 @@ namespace
 		if (!bIncludeHidden) { Data->SetNumberField(TEXT("hiddenButtons"), HiddenButtons); Data->SetNumberField(TEXT("hiddenWidgets"), HiddenWidgets); }
 		return Data;
 	}
+	FString DeviceOf(const FKey& K) { return K.IsGamepadKey() ? TEXT("gamepad") : K.IsTouch() ? TEXT("touch") : TEXT("keyboardMouse"); }
+
+	/** A prompt text names a key: the key name (B, SpaceBar), its display names (Space), or the Xbox letter of a gamepad face button. */
+	bool KeyMatchesText(const FKey& K, const FString& Text)
+	{
+		const FString T = Text.TrimStartAndEnd();
+		if (T.IsEmpty()) { return false; }
+		if (K.GetFName().ToString().Equals(T, ESearchCase::IgnoreCase) || K.GetDisplayName(false).ToString().Equals(T, ESearchCase::IgnoreCase) || K.GetDisplayName(true).ToString().Equals(T, ESearchCase::IgnoreCase)) { return true; }
+		const FString N = K.GetFName().ToString();
+		if (N.EndsWith(TEXT("FaceButton_Bottom"))) { return T.Equals(TEXT("A"), ESearchCase::IgnoreCase); }
+		if (N.EndsWith(TEXT("FaceButton_Right"))) { return T.Equals(TEXT("B"), ESearchCase::IgnoreCase); }
+		if (N.EndsWith(TEXT("FaceButton_Left"))) { return T.Equals(TEXT("X"), ESearchCase::IgnoreCase); }
+		if (N.EndsWith(TEXT("FaceButton_Top"))) { return T.Equals(TEXT("Y"), ESearchCase::IgnoreCase); }
+		return false;
+	}
+
+	FString CallText(UObject* Obj, const TCHAR* Fn)
+	{
+		UFunction* F = Obj ? Obj->FindFunction(FName(Fn)) : nullptr;
+		if (!F || F->ParmsSize > 256) { return FString(); }
+		FStructOnScope Parms(F);
+		Obj->ProcessEvent(F, Parms.GetStructMemory());
+		const FTextProperty* TP = CastField<FTextProperty>(F->GetReturnProperty());
+		return TP ? TP->GetPropertyValue_InContainer(Parms.GetStructMemory()).ToString() : FString();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> StrArray(const TArray<FString>& In)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		for (const FString& S : In) { Out.Add(MakeShared<FJsonValueString>(S)); }
+		return Out;
+	}
 }
 
 void RegisterUIRuntimeTools(FEWRegistry& R)
 {
+	R.Register(TEXT("ui_prompts"),
+		TEXT("Check the input prompts a Play In Editor player sees against what the input is really bound to (read-only). Lists the CommonUI action widgets on screen (their shown text, the Enhanced Input action or the input action rows, and the keys that action has for the current input type) and the on-screen texts that look like a key name (B, E, Space) with the actions that key triggers now. This finds a hint that shows a key the action does not use (for example a hint 'B' for an action bound to P). check = a list of {prompt, action}: each entry says OK, PROMPT_NOT_SHOWN (no such text on screen), ACTION_NOT_BOUND or MISMATCH, with the keys the action has and the actions the shown key triggers. The input type decides which keys count (MouseAndKeyboard, Gamepad, Touch; ui_input_type switches it, or pass device). Use input_map_list for the full mapping and ui_input_audit for the widget assets."),
+		TEXT(R"({"type":"object","properties":{
+			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
+			"device":{"type":"string","enum":["keyboardMouse","gamepad","touch"],"description":"Which keys count. Default: from the current CommonUI input type."},
+			"check":{"type":"array","description":"Prompts to verify: [{\"prompt\":\"B\",\"action\":\"IA_Secondary\"}]. action is an Input Action name or asset path (wildcards allowed).","items":{"type":"object"}}}})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
+		{
+			FString Err;
+			APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
+			if (!PC) { return Bad(TEXT("NO_PLAYER"), Err); }
+
+			// Validate the checks first.
+			struct FCheck { FString Prompt, Action; };
+			TArray<FCheck> Checks;
+			const TArray<TSharedPtr<FJsonValue>>* CheckArr = nullptr;
+			if (Args->TryGetArrayField(TEXT("check"), CheckArr))
+			{
+				for (int32 i = 0; i < CheckArr->Num(); ++i)
+				{
+					const TSharedPtr<FJsonObject>* O = nullptr;
+					if (!(*CheckArr)[i]->TryGetObject(O)) { return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("check[%d] must be an object {prompt, action}."), i)); }
+					for (const auto& KV : (*O)->Values)
+					{
+						if (KV.Key != TEXT("prompt") && KV.Key != TEXT("action")) { return Bad(TEXT("UNKNOWN_ARGUMENT"), FString::Printf(TEXT("check[%d] has unknown key '%s' (allowed: prompt, action)."), i, *KV.Key)); }
+					}
+					FCheck C;
+					(*O)->TryGetStringField(TEXT("prompt"), C.Prompt);
+					(*O)->TryGetStringField(TEXT("action"), C.Action);
+					if (C.Prompt.TrimStartAndEnd().IsEmpty() || C.Action.TrimStartAndEnd().IsEmpty()) { return Bad(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("check[%d] needs both prompt and action."), i)); }
+					Checks.Add(C);
+				}
+			}
+
+			const FString InputType = InputTypeName(PC);
+			FString Device = EW::Str(Args, TEXT("device"));
+			if (Device.IsEmpty()) { Device = InputType == TEXT("Gamepad") ? TEXT("gamepad") : InputType == TEXT("Touch") ? TEXT("touch") : TEXT("keyboardMouse"); }
+
+			// action name -> keys of the chosen device
+			TMap<FString, TArray<FKey>> Bound;
+			TMap<FString, FString> ActionPath;
+			TArray<FEnhancedActionKeyMapping> Live;
+			EW::PlayerInputMappings(PC, Live);
+			for (const FEnhancedActionKeyMapping& M : Live)
+			{
+				if (!M.Action || DeviceOf(M.Key) != Device) { continue; }
+				TArray<FKey>& Keys = Bound.FindOrAdd(M.Action->GetName());
+				Keys.AddUnique(M.Key);
+				ActionPath.Add(M.Action->GetName(), M.Action->GetPathName());
+			}
+			auto KeysJson = [](const TArray<FKey>& Keys)
+			{
+				TArray<FString> Names;
+				for (const FKey& K : Keys) { Names.Add(K.GetFName().ToString()); }
+				return StrArray(Names);
+			};
+			auto ActionsForText = [&Bound](const FString& Text)
+			{
+				TArray<FString> Out;
+				for (const TPair<FString, TArray<FKey>>& P : Bound) { for (const FKey& K : P.Value) { if (KeyMatchesText(K, Text)) { Out.AddUnique(P.Key); break; } } }
+				Out.Sort();
+				return Out;
+			};
+
+			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+			FEWResult Res = FEWResult::Ok(Data);
+			Data->SetStringField(TEXT("device"), Device);
+			if (!InputType.IsEmpty()) { Data->SetStringField(TEXT("inputType"), InputType); }
+			Data->SetNumberField(TEXT("boundActions"), Bound.Num());
+			if (Bound.Num() == 0) { Res.Warnings.Add(FString::Printf(TEXT("This player has no %s Enhanced Input mappings (no active mapping context, or the game uses legacy input). Prompts cannot be compared."), *Device)); }
+
+			// CommonUI action widgets on screen.
+			TArray<TSharedPtr<FJsonValue>> Widgets;
+			UWorld* World = PC->GetWorld();
+			if (UClass* AW = CommonClass(TEXT("CommonActionWidget")))
+			{
+				for (TObjectIterator<UWidget> It; It; ++It)
+				{
+					UWidget* W = *It;
+					if (!IsValid(W) || !W->IsA(AW) || W->GetWorld() != World || !OnScreen(W)) { continue; }
+					UUserWidget* Page = W->GetTypedOuter<UUserWidget>();
+					if (Page && Page->GetOwningPlayer() && Page->GetOwningPlayer() != PC) { continue; }
+					TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+					J->SetStringField(TEXT("name"), W->GetName());
+					if (Page) { J->SetStringField(TEXT("page"), Page->GetClass()->GetName()); }
+					const FString Shown = CallText(W, TEXT("GetDisplayText"));
+					J->SetStringField(TEXT("text"), Shown);
+					if (UObject* IA = CallWithObject(W, TEXT("GetEnhancedInputAction"), nullptr))
+					{
+						J->SetStringField(TEXT("enhancedAction"), IA->GetName());
+						const TArray<FKey>* Keys = Bound.Find(IA->GetName());
+						J->SetArrayField(TEXT("keys"), Keys ? KeysJson(*Keys) : TArray<TSharedPtr<FJsonValue>>());
+						if (!Shown.IsEmpty() && Keys) { bool bAny = false; for (const FKey& K : *Keys) { bAny |= KeyMatchesText(K, Shown); } J->SetBoolField(TEXT("textMatchesKey"), bAny); }
+					}
+					TArray<FString> Rows;
+					if (const FArrayProperty* AP = CastField<FArrayProperty>(W->GetClass()->FindPropertyByName(TEXT("InputActions"))))
+					{
+						const FStructProperty* SP = CastField<FStructProperty>(AP->Inner);
+						FScriptArrayHelper H(AP, AP->ContainerPtrToValuePtr<void>(W));
+						for (int32 i = 0; SP && SP->Struct == FDataTableRowHandle::StaticStruct() && i < H.Num(); ++i) { Rows.Add(reinterpret_cast<const FDataTableRowHandle*>(H.GetRawPtr(i))->RowName.ToString()); }
+					}
+					if (Rows.Num()) { J->SetArrayField(TEXT("inputActionRows"), StrArray(Rows)); }
+					Widgets.Add(MakeShared<FJsonValueObject>(J));
+				}
+			}
+			Data->SetArrayField(TEXT("actionWidgets"), Widgets);
+
+			// On-screen texts and where they come from.
+			TArray<TSharedPtr<FJsonValue>> KeyTexts;
+			TSet<FString> ShownTexts;
+			for (TObjectIterator<UTextBlock> It; It; ++It)
+			{
+				UTextBlock* T = *It;
+				if (!IsValid(T) || T->GetWorld() != World || !OnScreen(T)) { continue; }
+				UUserWidget* Page = T->GetTypedOuter<UUserWidget>();
+				if (Page && Page->GetOwningPlayer() && Page->GetOwningPlayer() != PC) { continue; }
+				const FString Text = T->GetText().ToString().TrimStartAndEnd();
+				if (Text.IsEmpty()) { continue; }
+				ShownTexts.Add(Text.ToLower());
+				if (Text.Len() > 14) { continue; }
+				const TArray<FString> Acts = ActionsForText(Text);
+				if (Acts.Num() == 0) { continue; }
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetStringField(TEXT("text"), Text);
+				J->SetStringField(TEXT("widget"), T->GetName());
+				if (Page) { J->SetStringField(TEXT("page"), Page->GetClass()->GetName()); }
+				J->SetArrayField(TEXT("actions"), StrArray(Acts));
+				KeyTexts.Add(MakeShared<FJsonValueObject>(J));
+			}
+			Data->SetArrayField(TEXT("keyTexts"), KeyTexts);
+			TSet<FString> WidgetTexts;
+			for (const TSharedPtr<FJsonValue>& V : Widgets) { WidgetTexts.Add(V->AsObject()->GetStringField(TEXT("text")).ToLower()); }
+
+			// Verify the requested prompts.
+			if (Checks.Num())
+			{
+				TArray<TSharedPtr<FJsonValue>> Out;
+				int32 Problems = 0;
+				for (const FCheck& C : Checks)
+				{
+					TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+					J->SetStringField(TEXT("prompt"), C.Prompt);
+					J->SetStringField(TEXT("action"), C.Action);
+					const FString P = C.Prompt.TrimStartAndEnd();
+					const bool bShown = ShownTexts.Contains(P.ToLower()) || WidgetTexts.Contains(P.ToLower());
+					J->SetBoolField(TEXT("shown"), bShown);
+					TArray<FString> Hit;
+					for (const TPair<FString, TArray<FKey>>& B : Bound)
+					{
+						if (B.Key.Equals(C.Action, ESearchCase::IgnoreCase) || B.Key.MatchesWildcard(C.Action) || ActionPath[B.Key].Equals(C.Action, ESearchCase::IgnoreCase) || FPackageName::ObjectPathToPackageName(ActionPath[B.Key]).Equals(C.Action, ESearchCase::IgnoreCase)) { Hit.Add(B.Key); }
+					}
+					FString Status;
+					if (Hit.Num() == 0)
+					{
+						Status = TEXT("ACTION_NOT_BOUND");
+						TArray<FString> All;
+						Bound.GetKeys(All);
+						J->SetArrayField(TEXT("boundActionNames"), StrArray(EW::Suggest(C.Action, All)));
+					}
+					else
+					{
+						TArray<FString> KeyNames;
+						bool bMatch = false;
+						for (const FString& A : Hit) { for (const FKey& K : Bound[A]) { KeyNames.AddUnique(K.GetFName().ToString()); bMatch |= KeyMatchesText(K, P); } }
+						J->SetArrayField(TEXT("actionKeys"), StrArray(KeyNames));
+						J->SetArrayField(TEXT("matchedActions"), StrArray(Hit));
+						J->SetArrayField(TEXT("promptKeyTriggers"), StrArray(ActionsForText(P)));
+						Status = !bShown ? TEXT("PROMPT_NOT_SHOWN") : bMatch ? TEXT("OK") : TEXT("MISMATCH");
+					}
+					if (Status == TEXT("PROMPT_NOT_SHOWN") && Hit.Num() == 0) { Status = TEXT("ACTION_NOT_BOUND"); }
+					J->SetStringField(TEXT("status"), Status);
+					if (Status != TEXT("OK")) { ++Problems; Res.Warnings.Add(FString::Printf(TEXT("Prompt '%s' for %s: %s."), *C.Prompt, *C.Action, *Status)); }
+					Out.Add(MakeShared<FJsonValueObject>(J));
+				}
+				Data->SetArrayField(TEXT("checks"), Out);
+				Data->SetNumberField(TEXT("problems"), Problems);
+				Data->SetBoolField(TEXT("allOk"), Problems == 0);
+			}
+			return Res;
+		});
+
 	R.Register(TEXT("ui_state"),
-		TEXT("What a Play In Editor player's UI shows right now: widgets in the viewport, CommonUI activatable widgets and activatable stacks with their widget list and top, and the buttons (UMG Button or CommonButtonBase) with label, page, layer (the stack holding the page), enabled and rectangle in viewport pixels. By default it lists only what the player can use: visible, on the top page of its stack, page activated. A closed or covered page (for example the old Back/Save after Settings closed) is left out and counted in hiddenButtons / hiddenWidgets. includeHidden lists everything, with top, visible, layer and hiddenReason per item."),
+		TEXT("What a Play In Editor player's UI shows right now: widgets in the viewport, CommonUI activatable widgets and activatable stacks with their widget list and top, and the buttons (UMG Button or CommonButtonBase) with label (the first text with a letter or digit, so a gear or play glyph does not hide the word), text (every text inside the button in drawing order, glyphs included), tooltip, page, layer (the stack holding the page), enabled and rectangle in viewport pixels. By default it lists only what the player can use: visible, on the top page of its stack, page activated. A closed or covered page (for example the old Back/Save after Settings closed) is left out and counted in hiddenButtons / hiddenWidgets. includeHidden lists everything, with top, visible, layer and hiddenReason per item."),
 		TEXT(R"({"type":"object","properties":{
 			"player":{"type":"integer","description":"Local player index, default 0."},
 			"includeHidden":{"type":"boolean","description":"Also list widgets and buttons that are hidden, covered by a higher page, or on a deactivated page (each with layer, top, visible and hiddenReason). Default false."}}})"),
@@ -463,10 +729,10 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 		});
 
 	R.RegisterAsync(TEXT("ui_click"),
-		TEXT("Click a button the player can use in Play In Editor (visible, on the top page of its stack), found by widget name or label (wildcards allowed). method click (default) first checks that no other hit-testable widget is drawn over the button center (else COVERED), then presses the Slate button (press + click, as a pointer or gamepad accept does); method event fires the UMG OnClicked directly, even when covered. Returns the UI state after settleSeconds."),
+		TEXT("Click a button the player can use in Play In Editor (visible, on the top page of its stack), found by widget name, label, any text inside the button (a glyph such as a gear works too) or tooltip (wildcards allowed). method click (default) first checks that no other hit-testable widget is drawn over the button center (else COVERED), then presses the Slate button (press + click, as a pointer or gamepad accept does); method event fires the UMG OnClicked directly, even when covered. Returns the UI state after settleSeconds."),
 		TEXT(R"({"type":"object","properties":{
 			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
-			"button":{"type":"string","description":"Widget name or label, e.g. Play or *Settings*."},
+			"button":{"type":"string","description":"Widget name, label, any text inside the button or its tooltip, e.g. Play or *Settings*."},
 			"method":{"type":"string","enum":["click","event"],"description":"click (default): checked like a real click, refused when covered; event: fire OnClicked directly."},
 			"settleSeconds":{"type":"number","description":"Wait after the click before reading the UI, default 0.3."}},
 			"required":["button"]})"),
@@ -484,7 +750,13 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 			// Only buttons the player can use now (visible, top page of its stack) are candidates; a button on a
 			// closed or covered page is reported as such instead of being clicked.
 			const TArray<FButtonInfo> All = Buttons(PC, /*bIncludeOffscreen*/ true);
-			auto Matches = [&Key](const FButtonInfo& B) { return B.Widget->GetName() == Key || B.Label.Equals(Key, ESearchCase::IgnoreCase) || B.Label.MatchesWildcard(Key) || B.Widget->GetName().MatchesWildcard(Key); };
+			auto Matches = [&Key](const FButtonInfo& B)
+			{
+				if (B.Widget->GetName() == Key || B.Label.Equals(Key, ESearchCase::IgnoreCase) || B.Label.MatchesWildcard(Key) || B.Widget->GetName().MatchesWildcard(Key)) { return true; }
+				if (!B.Tooltip.IsEmpty() && (B.Tooltip.Equals(Key, ESearchCase::IgnoreCase) || B.Tooltip.MatchesWildcard(Key))) { return true; }
+				for (const FString& T : B.Texts) { if (T.Equals(Key, ESearchCase::IgnoreCase) || T.MatchesWildcard(Key)) { return true; } }
+				return false;
+			};
 			auto Describe = [](const FButtonInfo& B) { return FString::Printf(TEXT("%s (page %s, layer %s)"), *B.Widget->GetName(), *B.Owner, *B.Layer); };
 			TArray<FButtonInfo> Hits, Unusable;
 			TArray<FString> Names;

@@ -4,6 +4,10 @@
 
 #include "AssetToolsModule.h"
 #include "EnhancedActionKeyMapping.h"
+#include "EnhancedInputSubsystems.h"
+#include "EnhancedPlayerInput.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
 #include "IAssetTools.h"
 #include "InputAction.h"
 #include "InputCoreTypes.h"
@@ -239,5 +243,99 @@ void RegisterInputTools(FEWRegistry& R)
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetArrayField(TEXT("mappings"), List);
 			return FEWResult::Ok(Data);
+		});
+
+	R.Register(TEXT("input_map_list"),
+		TEXT("Read what keys are bound to which Enhanced Input actions, grouped by action and by device (keyboardMouse, gamepad, touch). Read only. With context (an Input Mapping Context asset) it lists that asset's mappings. Without context, while Play In Editor runs, it lists what the player really has now: every applied context (with priority) and the live mappings, runtime remaps included. Each key has its name (SpaceBar), display name, device, modifiers and triggers. Filter with action (name or path, wildcards allowed) and device. Use it to find which key an action uses when a screen hint and the game disagree (ui_prompts compares on-screen hints with these keys); input_context_info is the same for one asset without grouping."),
+		TEXT(R"({"type":"object","properties":{
+			"context":{"type":"string","description":"Input Mapping Context asset, e.g. /Game/Input/IMC_Default. Omit while Play In Editor runs to read the player's live mappings."},
+			"action":{"type":"string","description":"Only actions whose name or path matches this (wildcards allowed), e.g. IA_Secondary or *Dash*."},
+			"device":{"type":"string","enum":["keyboardMouse","gamepad","touch"],"description":"Only keys of this device."},
+			"player":{"type":"integer","description":"Play In Editor player index when no context is given (default 0)."}}})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
+		{
+			const FString ContextArg = EW::Str(Args, TEXT("context"));
+			const FString ActionFilter = EW::Str(Args, TEXT("action"));
+			const FString DeviceFilter = EW::Str(Args, TEXT("device"));
+			FString Err;
+			TArray<FEnhancedActionKeyMapping> Maps;
+			TArray<TSharedPtr<FJsonValue>> Contexts;
+			FString Source;
+			if (!ContextArg.IsEmpty())
+			{
+				UInputMappingContext* C = EW::LoadAs<UInputMappingContext>(ContextArg, Err);
+				if (!C) { return Bad(TEXT("CONTEXT_NOT_FOUND"), Err); }
+				Maps = C->GetMappings();
+				Source = TEXT("asset");
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetStringField(TEXT("context"), C->GetPathName());
+				J->SetNumberField(TEXT("mappings"), Maps.Num());
+				Contexts.Add(MakeShared<FJsonValueObject>(J));
+			}
+			else
+			{
+				APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
+				if (!PC) { return Bad(TEXT("NO_PLAYER"), TEXT("Pass context (an Input Mapping Context asset), or start Play In Editor to read the player's live mappings. ") + Err); }
+				if (!EW::PlayerInputMappings(PC, Maps)) { return Bad(TEXT("NO_ENHANCED_INPUT"), TEXT("This player has no Enhanced Input player input (the game uses legacy input).")); }
+				Source = TEXT("player");
+				const TArray<TPair<FString, int32>> Applied = EW::PlayerInputContexts(PC);
+				for (const TPair<FString, int32>& A : Applied)
+				{
+					TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+					J->SetStringField(TEXT("context"), A.Key);
+					J->SetNumberField(TEXT("priority"), A.Value);
+					Contexts.Add(MakeShared<FJsonValueObject>(J));
+				}
+			}
+
+			TArray<FString> Order;
+			TMap<FString, TArray<TSharedPtr<FJsonValue>>> KeysOf;
+			TMap<FString, TMap<FString, TArray<FString>>> ByDevice;
+			TMap<FString, const UInputAction*> Actions;
+			int32 KeyCount = 0;
+			for (const FEnhancedActionKeyMapping& M : Maps)
+			{
+				if (!M.Action) { continue; }
+				const FString Path = M.Action->GetPathName();
+				if (ActionFilter.Len() && !M.Action->GetName().Equals(ActionFilter, ESearchCase::IgnoreCase) && !M.Action->GetName().MatchesWildcard(ActionFilter) && !Path.Equals(ActionFilter, ESearchCase::IgnoreCase) && !FPackageName::ObjectPathToPackageName(Path).Equals(ActionFilter, ESearchCase::IgnoreCase) && !Path.MatchesWildcard(ActionFilter)) { continue; }
+				const FString Device = M.Key.IsGamepadKey() ? TEXT("gamepad") : M.Key.IsTouch() ? TEXT("touch") : TEXT("keyboardMouse");
+				if (DeviceFilter.Len() && DeviceFilter != Device) { continue; }
+				if (!KeysOf.Contains(Path)) { Order.Add(Path); Actions.Add(Path, M.Action); }
+				TSharedRef<FJsonObject> K = MappingJson(M);
+				K->RemoveField(TEXT("action"));
+				K->SetStringField(TEXT("display"), M.Key.GetDisplayName(false).ToString());
+				K->SetStringField(TEXT("device"), Device);
+				KeysOf.FindOrAdd(Path).Add(MakeShared<FJsonValueObject>(K));
+				ByDevice.FindOrAdd(Path).FindOrAdd(Device).AddUnique(M.Key.GetFName().ToString());
+				++KeyCount;
+			}
+			TArray<TSharedPtr<FJsonValue>> List;
+			for (const FString& Path : Order)
+			{
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetStringField(TEXT("action"), Path);
+				J->SetStringField(TEXT("name"), Actions[Path]->GetName());
+				J->SetStringField(TEXT("valueType"), UEnum::GetValueAsString(Actions[Path]->ValueType));
+				TSharedRef<FJsonObject> Dev = MakeShared<FJsonObject>();
+				for (const TPair<FString, TArray<FString>>& D : ByDevice[Path])
+				{
+					TArray<TSharedPtr<FJsonValue>> Names;
+					for (const FString& N : D.Value) { Names.Add(MakeShared<FJsonValueString>(N)); }
+					Dev->SetArrayField(D.Key, Names);
+				}
+				J->SetObjectField(TEXT("byDevice"), Dev);
+				J->SetArrayField(TEXT("keys"), KeysOf[Path]);
+				List.Add(MakeShared<FJsonValueObject>(J));
+			}
+			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+			Data->SetStringField(TEXT("source"), Source);
+			Data->SetArrayField(TEXT("contexts"), Contexts);
+			Data->SetArrayField(TEXT("actions"), List);
+			Data->SetNumberField(TEXT("actionCount"), List.Num());
+			Data->SetNumberField(TEXT("keyCount"), KeyCount);
+			FEWResult Res = FEWResult::Ok(Data);
+			if (List.Num() == 0) { Res.Warnings.Add(Source == TEXT("player") && Maps.Num() == 0 ? TEXT("The player has no live Enhanced Input mappings (no mapping context is applied).") : TEXT("No mapping matched the action / device filter.")); }
+			return Res;
 		});
 }

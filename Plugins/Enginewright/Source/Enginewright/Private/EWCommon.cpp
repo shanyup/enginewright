@@ -5,6 +5,11 @@
 #include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
+#include "Engine/LocalPlayer.h"
+#include "EnhancedActionKeyMapping.h"
+#include "EnhancedInputSubsystems.h"
+#include "EnhancedPlayerInput.h"
+#include "InputMappingContext.h"
 #include "GameFramework/PlayerController.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
@@ -303,6 +308,36 @@ namespace EW
 		}
 		Sorted.Sort([](const auto& A, const auto& B) { return A.Key < B.Key; });
 		for (const auto& P : Sorted) { Out.Add(P.Value); }
+		return Out;
+	}
+
+	bool PlayerInputMappings(APlayerController* PC, TArray<FEnhancedActionKeyMapping>& Out)
+	{
+		ULocalPlayer* LP = PC ? PC->GetLocalPlayer() : nullptr;
+		UEnhancedInputLocalPlayerSubsystem* Sub = LP ? LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+		UEnhancedPlayerInput* Input = Sub ? Sub->GetPlayerInput() : nullptr;
+		if (!Input) { return false; }
+		// The list is a protected UPROPERTY of the player input; read it through reflection.
+		const FArrayProperty* AP = CastField<FArrayProperty>(Input->GetClass()->FindPropertyByName(TEXT("EnhancedActionMappings")));
+		const FStructProperty* SP = AP ? CastField<FStructProperty>(AP->Inner) : nullptr;
+		if (!SP || SP->Struct != FEnhancedActionKeyMapping::StaticStruct()) { return false; }
+		FScriptArrayHelper H(AP, AP->ContainerPtrToValuePtr<void>(Input));
+		for (int32 i = 0; i < H.Num(); ++i) { Out.Add(*reinterpret_cast<const FEnhancedActionKeyMapping*>(H.GetRawPtr(i))); }
+		return true;
+	}
+
+	TArray<TPair<FString, int32>> PlayerInputContexts(APlayerController* PC)
+	{
+		TArray<TPair<FString, int32>> Out;
+		ULocalPlayer* LP = PC ? PC->GetLocalPlayer() : nullptr;
+		UEnhancedInputLocalPlayerSubsystem* Sub = LP ? LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr;
+		if (!Sub) { return Out; }
+		for (TObjectIterator<UInputMappingContext> It; It; ++It)
+		{
+			int32 Priority = 0;
+			if (IsValid(*It) && !It->HasAnyFlags(RF_ClassDefaultObject) && Sub->HasMappingContext(*It, Priority)) { Out.Emplace(It->GetPathName(), Priority); }
+		}
+		Out.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B) { return A.Value > B.Value; });
 		return Out;
 	}
 
