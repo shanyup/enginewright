@@ -73,9 +73,10 @@ namespace
 		TArray<uint8> Again;
 		if (UGameplayStatics::SaveGameToMemory(Out.Object, Again))
 		{
-			const bool bPrefix = Again.Num() <= Out.Bytes.Num() && FMemory::Memcmp(Again.GetData(), Out.Bytes.GetData(), Again.Num()) == 0;
-			Out.bRoundTrips = bPrefix;
-			Out.TrailerBytes = bPrefix ? Out.Bytes.Num() - Again.Num() : 0;
+			// Size, not bytes: a TMap or an older save version can change byte order or content but not the length,
+			// while a game footer or checksum makes the file longer than the engine's own serialization.
+			Out.bRoundTrips = Again.Num() <= Out.Bytes.Num() && FMemory::Memcmp(Again.GetData(), Out.Bytes.GetData(), Again.Num()) == 0; // information only
+			Out.TrailerBytes = FMath::Max(0, Out.Bytes.Num() - Again.Num());
 		}
 		return true;
 	}
@@ -140,8 +141,9 @@ void RegisterSaveGameTools(FEWRegistry& R)
 			Data->SetStringField(TEXT("slot"), Name);
 			Data->SetStringField(TEXT("class"), Slot.Object->GetClass()->GetPathName());
 			Data->SetNumberField(TEXT("bytes"), Slot.Bytes.Num());
-			Data->SetBoolField(TEXT("customFormat"), Slot.TrailerBytes > 0 || !Slot.bRoundTrips);
+			Data->SetBoolField(TEXT("customFormat"), Slot.TrailerBytes > 0);
 			Data->SetNumberField(TEXT("trailerBytes"), Slot.TrailerBytes);
+			Data->SetBoolField(TEXT("rewriteIdentical"), Slot.bRoundTrips);
 			Data->SetObjectField(TEXT("values"), V);
 			FEWResult Res = FEWResult::Ok(Data);
 			if (Slot.TrailerBytes > 0) { Res.Warnings.Add(FString::Printf(TEXT("The file has %d bytes after the engine's own data (a game checksum or footer). savegame_set will not write it without the game's save function."), Slot.TrailerBytes)); }
@@ -179,7 +181,7 @@ void RegisterSaveGameTools(FEWRegistry& R)
 				FEWResult Err;
 				if (!LoadSlot(Name, User, Slot, Err)) { return Err; }
 				OldBytes = Slot.Bytes;
-				if ((Slot.TrailerBytes > 0 || !Slot.bRoundTrips) && FuncSpec.IsEmpty())
+				if (Slot.TrailerBytes > 0 && FuncSpec.IsEmpty())
 				{
 					return Bad(TEXT("CUSTOM_SAVE_FORMAT"), FString::Printf(TEXT("Slot '%s' has %d bytes the engine does not write (a game checksum or footer); a raw write would break it. Pass saveFunction with the game's own save function (a UFUNCTION), or change the value through the game."), *Name, Slot.TrailerBytes),
 						{ TEXT("savegame_get shows customFormat and trailerBytes."), TEXT("saveFunction: 'ClassName:StaticFunction' (takes the SaveGame) or 'Function' (on the SaveGame object).") });
