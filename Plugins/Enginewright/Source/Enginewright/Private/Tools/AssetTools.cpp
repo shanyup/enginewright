@@ -12,6 +12,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "IAssetTools.h"
+#include "Internationalization/StringTable.h"
 #include "Misc/PackageName.h"
 #include "Misc/RedirectCollector.h"
 #include "ObjectTools.h"
@@ -59,6 +60,42 @@ namespace
 		TArray<FString> S;
 		for (const FName& N : Out) { if (N.ToString() != Package) { S.Add(N.ToString()); } }
 		return S;
+	}
+
+	/** Orders the packages so that referencers come before what they reference; the given order on a cycle. */
+	TArray<FString> ReferencersFirst(const TSet<FString>& Set, const TArray<UObject*>& Objects)
+	{
+		TArray<FString> Nodes = Set.Array();
+		Nodes.Sort();
+		TMap<FString, TArray<FString>> Deps;
+		TMap<FString, int32> Indeg;
+		for (const FString& P : Nodes) { Deps.Add(P, TArray<FString>()); Indeg.Add(P, 0); }
+		for (const FString& P : Nodes)
+		{
+			TArray<FName> Out;
+			Registry().GetDependencies(FName(*P), Out, UE::AssetRegistry::EDependencyCategory::Package);
+			for (const FName& D : Out)
+			{
+				const FString DS = D.ToString();
+				if (DS != P && Set.Contains(DS)) { Deps[P].AddUnique(DS); }
+			}
+		}
+		for (const FString& P : Nodes) { for (const FString& D : Deps[P]) { Indeg[D] += 1; } }
+		TArray<FString> Ready, Order;
+		for (const FString& P : Nodes) { if (Indeg[P] == 0) { Ready.Add(P); } }
+		while (Ready.Num())
+		{
+			const FString P = Ready[0];
+			Ready.RemoveAt(0);
+			Order.Add(P);
+			for (const FString& D : Deps[P]) { if (--Indeg[D] == 0) { Ready.Add(D); } }
+		}
+		if (Order.Num() != Nodes.Num())
+		{
+			Order.Reset();
+			for (const UObject* Obj : Objects) { Order.AddUnique(Obj->GetOutermost()->GetName()); }
+		}
+		return Order;
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ToJson(const TArray<FString>& In)
@@ -123,7 +160,7 @@ namespace
 			}
 		}
 		FString File;
-		if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File) && IFileManager::Get().IsReadOnly(*File))
+		if (EW::PackageFileOnDisk(Package, File) && IFileManager::Get().IsReadOnly(*File))
 		{
 			Why.Add(TEXT("the package file is read-only (source control checkout needed)"));
 		}
@@ -377,6 +414,8 @@ void RegisterAssetTools(FEWRegistry& R)
 	R.Register(TEXT("asset_delete"),
 		TEXT("Delete assets. Refused (ASSET_REFERENCED) while an asset outside the deleted set still references them: data.blocking and data.reasons say which asset or package uses each one. "
 			"An asset that is still there after the delete returns DELETE_INCOMPLETE with a reason per asset in data.reasons (open in an asset editor, unsaved changes, referenced by another asset, read-only file, or the objects that hold the loaded asset in memory). "
+			"A set whose assets only reference each other is deleted in one call (referencers first). String Tables are deleted too (the engine keeps loaded String Tables in memory; the reference check above still applies). "
+			"Copies the engine keeps in memory (for example the transient re-instancing copies of an edited struct) do not block the delete. "
 			"force true skips the reference check: it closes the editors of the referencing assets, deletes the placed instances of a deleted Blueprint, nulls the references inside loaded assets (they become unsaved, Enginewright does not save them) and leaves references in assets that are not loaded dangling until those are opened and saved. It does not free an asset that something else still holds in memory: that ends in DELETE_INCOMPLETE with the reason."),
 		TEXT(R"({"type":"object","properties":{
 			"paths":{"type":"array","items":{"type":"string"}},
@@ -427,7 +466,64 @@ void RegisterAssetTools(FEWRegistry& R)
 				return Res;
 			}
 
-			const int32 Deleted = bForce ? ObjectTools::ForceDeleteObjects(Objects, false) : ObjectTools::DeleteObjects(Objects, false);
+			int32 Deleted = 0;
+			if (bForce)
+			{
+				Deleted = ObjectTools::ForceDeleteObjects(Objects, false);
+			}
+			else
+			{
+				// Remember the objects by path, not by pointer: the garbage collection below frees the deleted package.
+				TMap<FString, TArray<FString>> PathsByPackage;
+				for (UObject* Obj : Objects) { PathsByPackage.FindOrAdd(Obj->GetOutermost()->GetName()).AddUnique(Obj->GetPathName()); }
+				// Referencers first, so an asset is not held in memory by another one of the same set.
+				const TArray<FString> Order = ReferencersFirst(Set, Objects);
+				Objects.Reset();
+				for (const FString& Package : Order)
+				{
+					bool bDeletedHere = false;
+					if (const TArray<FString>* PkgPaths = PathsByPackage.Find(Package))
+					{
+						for (const FString& Path : *PkgPaths)
+						{
+							UObject* Obj = FindObject<UObject>(nullptr, *Path);
+							if (!Obj) { continue; }
+							// A loaded String Table stays alive until it is marked garbage: force delete that one.
+							int32 N = Obj->IsA<UStringTable>() ? ObjectTools::ForceDeleteObjects({ Obj }, false) : ObjectTools::DeleteObjects({ Obj }, false);
+							// The engine keeps transient copies of an edited struct (re-instancing) that only point at it: a normal
+							// delete refuses those, but nothing outside the set really uses the asset, so force delete that one.
+							if (N == 0 && !Obj->IsA<UStringTable>())
+							{
+								FReferencerInformationList Holders;
+								UObject* Probe = Obj;
+								if (IsReferenced(Probe, GARBAGE_COLLECTION_KEEPFLAGS, EInternalObjectFlags_GarbageCollectionKeepFlags, /*bCheckSubObjects*/ true, &Holders))
+								{
+									int32 ExternalHolders = 0;
+									bool bHeldByTransientOrSetOnly = true;
+									for (const FReferencerInformation& H : Holders.ExternalReferences)
+									{
+										if (!H.Referencer) { continue; }
+										ExternalHolders++;
+										if (H.Referencer->GetOutermost() != GetTransientPackage() && !Set.Contains(H.Referencer->GetOutermost()->GetName()))
+										{
+											bHeldByTransientOrSetOnly = false;
+											break;
+										}
+									}
+									if (ExternalHolders && bHeldByTransientOrSetOnly)
+									{
+										N = ObjectTools::ForceDeleteObjects({ Obj }, false);
+									}
+								}
+							}
+							Deleted += N;
+							bDeletedHere = bDeletedHere || N > 0;
+						}
+					}
+					// The deleted package stays in memory (and keeps its references) until a garbage collection.
+					if (bDeletedHere) { CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS); }
+				}
+			}
 			Objects.Reset();
 			// Free the deleted packages now, so the same path can be created again in this session.
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
@@ -440,7 +536,7 @@ void RegisterAssetTools(FEWRegistry& R)
 				UPackage* StillLoaded = FindPackage(nullptr, *Package);
 				UObject* StillAsset = StillLoaded ? StaticFindObject(UObject::StaticClass(), StillLoaded, *FPackageName::GetShortName(Package)) : nullptr;
 				FString PkgFile;
-				const bool bFileThere = FPackageName::TryConvertLongPackageNameToFilename(Package, PkgFile, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(PkgFile);
+				const bool bFileThere = EW::PackageFileOnDisk(Package, PkgFile);
 				if (Still.Num() == 0 && !bFileThere && IsValid(StillAsset))
 				{
 					// Deleted from the registry and from disk, but something (undo buffer, an open tool) still holds the
@@ -460,7 +556,7 @@ void RegisterAssetTools(FEWRegistry& R)
 				// package deleted and created again in this session). The package is unloaded here, so remove
 				// the leftover file ourselves; otherwise the path stays taken until the editor restarts.
 				FString File;
-				if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File))
+				if (EW::PackageFileOnDisk(Package, File))
 				{
 					if (!IFileManager::Get().Delete(*File, false, false, true))
 					{

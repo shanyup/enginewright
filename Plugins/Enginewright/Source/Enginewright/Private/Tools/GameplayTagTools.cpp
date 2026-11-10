@@ -7,10 +7,36 @@
 #include "GameplayTagContainer.h"
 #include "GameplayTagsEditorModule.h"
 #include "GameplayTagsManager.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 namespace
 {
 	FEWResult Bad(const FString& Code, const FString& Msg, const TArray<FString>& Sug = {}) { return FEWResult::Error(Code, Msg, Sug); }
+
+	/** Tag ini files that gameplay_tag_add created in this editor session. */
+	TSet<FString>& CreatedTagIniFiles()
+	{
+		static TSet<FString> Files;
+		return Files;
+	}
+
+	/** Folders (e.g. Config/Tags) that gameplay_tag_add created in this editor session. */
+	TSet<FString>& CreatedTagFolders()
+	{
+		static TSet<FString> Folders;
+		return Folders;
+	}
+
+	FString TagIniPath(const FString& Source)
+	{
+		if (Source.Equals(TEXT("DefaultGameplayTags.ini"), ESearchCase::IgnoreCase))
+		{
+			return FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir() / TEXT("DefaultGameplayTags.ini"));
+		}
+		return FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir() / TEXT("Tags") / Source);
+	}
 
 	TArray<FString> AllTagNames()
 	{
@@ -132,16 +158,30 @@ void RegisterGameplayTagTools(FEWRegistry& R)
 			FString Source = EW::Str(Args, TEXT("source"));
 			if (Source.IsEmpty()) { Source = TEXT("DefaultGameplayTags.ini"); }
 			if (!Source.EndsWith(TEXT(".ini"))) { return Bad(TEXT("INVALID_ARGUMENT"), TEXT("source must be an .ini file name, e.g. DefaultGameplayTags.ini.")); }
+			const FString IniPath = TagIniPath(Source);
+			const FString IniFolder = FPaths::GetPath(IniPath);
+			const bool bFolderExistedBefore = IFileManager::Get().DirectoryExists(*IniFolder);
+			const bool bExistedBefore = IFileManager::Get().FileExists(*IniPath);
 			if (!IGameplayTagsEditorModule::Get().AddNewGameplayTagToINI(Tag, EW::Str(Args, TEXT("comment")), FName(*Source)))
 			{
 				return Bad(TEXT("ADD_FAILED"), TEXT("The editor refused the tag (see log_read for the reason)."));
 			}
 			if (!TagExists(Tag)) { return Bad(TEXT("READBACK_MISMATCH"), TEXT("The tag was written but is not in the tag tree.")); }
-			return FEWResult::Ok(TagJson(FName(*Tag)));
+			TSharedRef<FJsonObject> Data = TagJson(FName(*Tag));
+			if (!bExistedBefore && IFileManager::Get().FileExists(*IniPath))
+			{
+				CreatedTagIniFiles().Add(IniPath);
+				Data->SetStringField(TEXT("createdFile"), IniPath);
+				if (!bFolderExistedBefore && IFileManager::Get().DirectoryExists(*IniFolder))
+				{
+					CreatedTagFolders().Add(IniFolder);
+				}
+			}
+			return FEWResult::Ok(Data);
 		}, /*bTransactional*/ false);
 
 	R.Register(TEXT("gameplay_tag_remove"),
-		TEXT("Remove an explicit Gameplay Tag from its ini. Refused while assets reference it (the reply lists them) or when it is only implied by child tags."),
+		TEXT("Remove an explicit Gameplay Tag from its ini. Refused while assets reference it (the reply lists them) or when it is only implied by child tags. A tag ini that gameplay_tag_add created is deleted again when its last tag is removed."),
 		TEXT(R"({"type":"object","properties":{"tag":{"type":"string","description":"Full tag name, e.g. Item.Food.Apple."}},"required":["tag"]})"),
 		true,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
@@ -166,8 +206,46 @@ void RegisterGameplayTagTools(FEWRegistry& R)
 			}
 			if (!IGameplayTagsEditorModule::Get().DeleteTagFromINI(Node)) { return Bad(TEXT("REMOVE_FAILED"), TEXT("The editor refused to remove the tag (for example a native or data-table tag; see log_read).")); }
 			if (TagExists(Tag)) { return Bad(TEXT("READBACK_MISMATCH"), TEXT("The tag is still in the tag tree.")); }
+			// Delete an ini that Enginewright created in this session once its last tag is gone. Never touch other files.
+			TArray<FString> RemovedFiles;
+			for (auto It = CreatedTagIniFiles().CreateIterator(); It; ++It)
+			{
+				const FString& File = *It;
+				if (!IFileManager::Get().FileExists(*File)) { It.RemoveCurrent(); continue; }
+				TArray<FString> Lines;
+				if (!FFileHelper::LoadFileToStringArray(Lines, *File)) { continue; }
+				bool bHasTag = false;
+				for (const FString& L : Lines) { if (L.StartsWith(TEXT("+GameplayTagList="))) { bHasTag = true; break; } }
+				if (bHasTag) { continue; }
+				if (IFileManager::Get().Delete(*File))
+				{
+					RemovedFiles.Add(File);
+					It.RemoveCurrent();
+				}
+			}
+			// Delete a folder that Enginewright created in this session once it is empty. Never touch pre-existing folders.
+			TArray<FString> RemovedFolders;
+			for (auto It = CreatedTagFolders().CreateIterator(); It; ++It)
+			{
+				const FString& Dir = *It;
+				if (!IFileManager::Get().DirectoryExists(*Dir)) { It.RemoveCurrent(); continue; }
+				bool bEmpty = true;
+				IFileManager::Get().IterateDirectory(*Dir, [&bEmpty](const TCHAR*, bool) { bEmpty = false; return false; });
+				if (!bEmpty) { continue; }
+				if (IFileManager::Get().DeleteDirectory(*Dir, /*RequireExists*/ false, /*Tree*/ false))
+				{
+					RemovedFolders.Add(Dir);
+					It.RemoveCurrent();
+				}
+			}
+			if (RemovedFiles.Num())
+			{
+				UGameplayTagsManager::Get().EditorRefreshGameplayTagTree();
+			}
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("removed"), Tag);
+			if (RemovedFiles.Num()) { Data->SetStringField(TEXT("removedFile"), RemovedFiles[0]); }
+			if (RemovedFolders.Num()) { Data->SetStringField(TEXT("removedFolder"), RemovedFolders[0]); }
 			return FEWResult::Ok(Data);
 		}, /*bTransactional*/ false);
 }

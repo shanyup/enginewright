@@ -70,6 +70,9 @@ namespace EW
 	/** True when an asset already lives at this package path: on disk, or in memory and not deleted. */
 	bool AssetPathTaken(const FString& PackagePath);
 
+	/** File of a package on disk (.uasset or .umap). False when no file exists; OutFile is then the .uasset name. */
+	bool PackageFileOnDisk(const FString& Package, FString& OutFile);
+
 	/** Package names of assets of Class (and subclasses) under Folder, recursively. */
 	TArray<FString> FindAssets(const FString& Folder, UClass* Class);
 

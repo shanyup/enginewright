@@ -139,6 +139,8 @@ r = c("game_run", {"url": "/X", "shotsExpected": -1})
 check("shotsExpected below 0 -> INVALID_ARGUMENT", r.get("errorCode") == "INVALID_ARGUMENT", r)
 
 # ER-07 / ER-08: editor checks before the run (code on disk vs Live Coding, heavy editor level, realtime viewports)
+r = c("game_run", {"url": "/Game/Maps/MAP_EWNope?x=1", "dryRun": True})
+check("dryRun with a /Game map that does not exist -> MAP_NOT_FOUND", r.get("errorCode") == "MAP_NOT_FOUND", r)
 r = c("game_run", {"url": "/X", "dryRun": True})
 chk = (r.get("data") or {}).get("checks") or {}
 scene = chk.get("editorScene") or {}
@@ -451,6 +453,9 @@ if os.environ.get("ENGINEWRIGHT_TEST_GAME") == "1":
     check("real game: URL confirmed in its log", run0(r).get("urlConfirmed") is True, r)
     pngs = run0(r).get("screenshots", [])
     check("real game: HighResShot PNG collected at 1280x720", any(s.get("width") == 1280 and s.get("height") == 720 for s in pngs), r)
+    moved = [s for s in pngs if "Saved/Screenshots" in (s.get("copiedFrom") or "")]
+    check("real game: PNGs from Saved/Screenshots are moved (originalRemoved true, source gone)",
+          bool(moved) and all(s.get("originalRemoved") is True and not pathlib.Path(s["copiedFrom"]).exists() for s in moved), pngs)
     check("real game: PASSED and stopped by done, not by the timeout", run0(r).get("verdict") == "PASSED"
           and run0(r).get("stopReason") == "DONE_BUT_NOT_EXITED" and not run0(r).get("timedOut"), r)
     # ER-09: the same screenshot run without any log pattern, ended by the PNG count

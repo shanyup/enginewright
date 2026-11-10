@@ -5,9 +5,13 @@
 #include "EWCommon.h"
 #include "EWImageStats.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Components/SkyLightComponent.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "LevelEditorViewport.h"
@@ -18,6 +22,7 @@
 #include "Internationalization/Regex.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Culture.h"
 #include "Serialization/Archive.h"
@@ -449,6 +454,7 @@ namespace
 		TArray<TSharedPtr<FJsonValue>> Out;
 		TSet<FString> Seen;
 		const FString ShotsPrefix = Fwd(FPaths::ConvertRelativePathToFull(R.ShotsDir)) + TEXT("/");
+		const FString ScreenshotsPrefix = Fwd(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Screenshots"))) + TEXT("/");
 		for (const FString& D : Dirs)
 		{
 			if (!IFileManager::Get().DirectoryExists(*D)) { continue; }
@@ -476,6 +482,11 @@ namespace
 						Final = Fwd(FPaths::ConvertRelativePathToFull(Target));
 						Seen.Add(Final);
 						Item->SetStringField(TEXT("copiedFrom"), F);
+						// Saved/Screenshots is the engine's own folder: move those shots into the run folder.
+						if (F.StartsWith(ScreenshotsPrefix) && IFileManager::Get().Delete(*F))
+						{
+							Item->SetBoolField(TEXT("originalRemoved"), true);
+						}
 					}
 				}
 				Item->SetStringField(TEXT("path"), Final);
@@ -899,7 +910,7 @@ namespace
 	 * ER-08: the editor keeps rendering its own level while the game runs. Reports how heavy the open level is and, unless
 	 * told not to, pauses the realtime level viewports for the run (restored when it ends).
 	 */
-	void CheckEditorScene(FGameRun& R, bool bApply, TSharedRef<FJsonObject> Checks, TArray<FString>& Warnings)
+	void CheckEditorScene(FGameRun& R, bool bApply, bool bDry, TSharedRef<FJsonObject> Checks, TArray<FString>& Warnings)
 	{
 		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 		if (!World) { return; }
@@ -940,9 +951,14 @@ namespace
 		Checks->SetObjectField(TEXT("editorScene"), Scene);
 		if (bHeavy)
 		{
-			Warnings.Add(FString::Printf(TEXT("The editor has a heavy level open (%s: %d actors%s%s%s); it shares the GPU with the game. %s If the game is still slow, open a small level in the editor first (level_open) and run again."),
-				*World->GetOutermost()->GetName(), Actors, bLumen ? TEXT(", Lumen") : TEXT(""), bRealtimeSky ? TEXT(", real-time sky light") : TEXT(""), bCloud ? TEXT(", volumetric clouds") : TEXT(""),
-				Paused > 0 ? TEXT("Its realtime viewports are paused during the run.") : (bApply ? TEXT("") : TEXT("Viewports were left running (editorViewports keep)."))));
+			TArray<FString> Sentences;
+			Sentences.Add(FString::Printf(TEXT("The editor has a heavy level open (%s: %d actors%s%s%s); it shares the GPU with the game."),
+				*World->GetOutermost()->GetName(), Actors, bLumen ? TEXT(", Lumen") : TEXT(""), bRealtimeSky ? TEXT(", real-time sky light") : TEXT(""), bCloud ? TEXT(", volumetric clouds") : TEXT("")));
+			if (Paused > 0) { Sentences.Add(TEXT("Its realtime viewports are paused during the run.")); }
+			else if (bDry && R.S.bPauseViewports && Realtime > 0) { Sentences.Add(TEXT("Its realtime viewports will be paused during the run.")); }
+			else if (!R.S.bPauseViewports) { Sentences.Add(TEXT("Viewports were left running (editorViewports keep).")); }
+			Sentences.Add(TEXT("If the game is still slow, open a small level in the editor first (level_open) and run again."));
+			Warnings.Add(FString::Join(Sentences, TEXT(" ")));
 		}
 	}
 
@@ -980,7 +996,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 		TEXT(R"(NAMED SHOTS (shotNames): ["g2-deck","g3-end"] are file name parts (case-insensitive); the run ends with PASSED / stopReason SHOTS_DONE when each one has a new, fully written PNG, so the game is closed as soon as the shots you asked for exist (shots, without Names, only adds folders to search). The result lists shotNames {name: file or null} and shotsMissing; a game that ended without a named shot is SHOTS_MISSING. shotsFound counts each new PNG once. )")
 		TEXT(R"(LONG RUNS: agent tool calls are cut off after about 420 s, so never pass a long wait. Give wait 60-240 (or 0), and when the reply is the error STILL_RUNNING with data.id, the game keeps running: call game_run_status {"id":"<id>","wait":240} again and again until its state is finished (then it reports like game_run). Example, two resolutions (two game starts, so about twice the time of one): game_run {"url":"/Game/Maps/Shots?Shots={shots}","resolutions":["1920x1080","1280x720"],"shotNames":["menu","deck"],"timeout":900,"wait":120} -> STILL_RUNNING, id 20261110-013000 -> game_run_status {"id":"20261110-013000","wait":240} -> ... -> verdicts {1920x1080: PASSED, 1280x720: PASSED}. Only one game_run runs at a time (BUSY); stop one with game_run_status {"stop":true}. )")
 		TEXT(R"(LOOK TUNING (cvars, variants): cvars {"r.ExposureOffset":-1} sets console variables in the game process (sent as -ExecCmds, merged with an -ExecCmds you pass in args; each name must exist, else UNKNOWN_CVAR with close names; the run reports the applied values in runs[].cvars). variants [{"label":"dark","cvars":{...}},{"label":"bright","cvars":{...}}] runs the same game once per variant (and resolution) with that variant's cvars on top of cvars; every screenshot then carries stats (image_stats numbers; from the second variant on the diff against the first variant's file of the same name) and each run has meanLuma. Scene exposure cvars that exist in UE 5.8: r.DefaultFeature.AutoExposure (0 = fixed exposure, 1 = auto), r.DefaultFeature.AutoExposure.Bias, r.DefaultFeature.AutoExposure.Method (0 histogram, 1 basic), r.EyeAdaptation.MethodOverride (-1 none, 1 histogram, 2 basic, 3 manual), r.ExposureOffset (exposure in stops added on top; cheat variable, not in shipping builds), r.EyeAdaptationQuality, r.Tonemapper.Sharpen. Check any other name with console_command before relying on it. Example, two exposures: game_run {"url":"/Game/Maps/Shots?Shots={shots}","shotNames":["deck"],"variants":[{"label":"ev0","cvars":{"r.ExposureOffset":0}},{"label":"evminus2","cvars":{"r.ExposureOffset":-2}}]}. )")
-		TEXT("If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status."),
+		TEXT("A /Game map in url must exist (MAP_NOT_FOUND). If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status."),
 		TEXT(R"({"type":"object","properties":{
 			"url":{"type":"string","description":"Map and options passed as one argument, unchanged, e.g. /Game/Maps/Test?SelfTest=Logic?Shots={shots}?Quit=1"},
 			"resolutions":{"type":"array","description":"Resolutions as \"WxH\" strings, one run each in order (e.g. [\"1920x1080\",\"1280x720\"]). Default: one run at the game's own size."},
@@ -997,7 +1013,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			"require":{"type":"string","description":"Regex that must appear within requireWithin seconds, else the game is stopped (REQUIRED_LINE_MISSING). Guards against the real game running with real saves when the test mode did not start."},
 			"requireWithin":{"type":"number","description":"Seconds, default 120."},
 			"urlCheckTimeout":{"type":"number","description":"Seconds to wait for the game log's Command Line (default 120)."},
-			"shots":{"type":"array","description":"Extra folders to collect new PNG files from (copied into the run folder). Saved/Screenshots is always searched for editor runs."},
+			"shots":{"type":"array","description":"Extra folders to collect new PNG files from (copied into the run folder). Saved/Screenshots is always searched for editor runs. PNGs found in Saved/Screenshots are moved into the run folder; files in these extra folders are copied."},
 			"out":{"type":"string","description":"Output folder (default <project>/Saved/Enginewright/runs/run-<time>)."},
 			"maxLines":{"type":"integer","description":"Most kept log lines per run (default 300)."},
 			"unattended":{"type":"boolean","description":"Pass -unattended (default true: no dialogs block the run)."},
@@ -1166,6 +1182,25 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 				if (!IFileManager::Get().FileExists(*S.Exe)) { Done(FEWResult::Error(TEXT("NOT_FOUND"), FString::Printf(TEXT("exe not found: %s"), *S.Exe))); return; }
 			}
 			else if (!S.ExeArgs.IsEmpty()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("exeArgs needs exe."))); return; }
+			// A /Game map in url must exist: a missing one only fails after the game already loaded another map.
+			if (S.Exe.IsEmpty() && !S.Url.IsEmpty())
+			{
+				FString MapPart = S.Url;
+				int32 Question;
+				if (MapPart.FindChar(TEXT('?'), Question)) { MapPart.LeftInline(Question); }
+				MapPart.TrimStartAndEndInline();
+				if (!MapPart.Contains(TEXT("{")) && FPackageName::IsValidLongPackageName(MapPart) && !FPackageName::DoesPackageExist(MapPart))
+				{
+					TArray<FString> Maps, Short;
+					TArray<FAssetData> Found;
+					FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), Found, /*bSearchSubClasses*/ true);
+					for (const FAssetData& A : Found) { Maps.AddUnique(A.PackageName.ToString()); }
+					Maps.Sort();
+					for (const FString& M : Maps) { Short.Add(FPackageName::GetShortName(M)); }
+					Done(FEWResult::Error(TEXT("MAP_NOT_FOUND"), FString::Printf(TEXT("No map at '%s'. Pass a map asset path such as /Game/Maps/MAP_Menu."), *MapPart), EW::Suggest(FPackageName::GetShortName(MapPart), Short)));
+					return;
+				}
+			}
 			for (const FString& P : S.PassText) { R->Pass.Emplace(P); }
 			for (const FString& P : S.FailText) { R->Fail.Emplace(P); }
 			if (!S.Done.IsEmpty()) { R->DoneRe.Emplace(S.Done); }
@@ -1196,7 +1231,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 				return;
 			}
 			if (!Refuse.IsEmpty()) { R->Warnings.Add(Refuse); }
-			CheckEditorScene(*R, S.bPauseViewports && !bDry, Checks, R->Warnings);
+			CheckEditorScene(*R, S.bPauseViewports && !bDry, bDry, Checks, R->Warnings);
 			R->Checks = Checks;
 			if (bDry)
 			{

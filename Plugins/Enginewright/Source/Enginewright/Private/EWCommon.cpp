@@ -281,6 +281,21 @@ namespace EW
 		return true;
 	}
 
+	bool PackageFileOnDisk(const FString& Package, FString& OutFile)
+	{
+		for (const FString& Ext : { FPackageName::GetAssetPackageExtension(), FPackageName::GetMapPackageExtension() })
+		{
+			FString File;
+			if (FPackageName::TryConvertLongPackageNameToFilename(Package, File, Ext) && FPaths::FileExists(File))
+			{
+				OutFile = File;
+				return true;
+			}
+		}
+		FPackageName::TryConvertLongPackageNameToFilename(Package, OutFile, FPackageName::GetAssetPackageExtension());
+		return false;
+	}
+
 	bool AssetPathTaken(const FString& InPath)
 	{
 		FString Path = InPath;
@@ -291,7 +306,7 @@ namespace EW
 		{
 			// Not loaded: ask the file system directly (the package-name cache keeps deleted packages).
 			FString File;
-			return FPackageName::TryConvertLongPackageNameToFilename(Path, File, FPackageName::GetAssetPackageExtension()) && FPaths::FileExists(File);
+			return PackageFileOnDisk(Path, File);
 		}
 		UObject* Asset = StaticFindObject(UObject::StaticClass(), Pkg, *FPackageName::GetShortName(Path));
 		return IsValid(Asset);

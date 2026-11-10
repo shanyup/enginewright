@@ -4,7 +4,7 @@ Needs a running editor on ENGINEWRIGHT_TEST_PROJECT (writes its Config/DefaultGa
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ewtest import call as c, check, done, ensure_stopped
+from ewtest import PROJ, call as c, check, done, ensure_stopped
 
 ensure_stopped()
 
@@ -46,6 +46,17 @@ check("remove unknown -> TAG_NOT_FOUND", not r["ok"] and r["errorCode"] == "TAG_
 for t in ("EWTest.Fruit.Pear", "EWTest.Fruit", "EWTest.Item.Apple"):
     r = c("gameplay_tag_remove", {"tag": t})
     check(f"remove {t}", r["ok"] and r["data"]["removed"] == t, r)
+
+# --- a tag ini created by gameplay_tag_add is deleted again with its last tag
+tmp_ini = PROJ / "Config/Tags/EWTestTmpTags.ini"
+if tmp_ini.exists():
+    tmp_ini.unlink()
+r = c("gameplay_tag_add", {"tag": "EWTest.Tmp.One", "source": "EWTestTmpTags.ini"})
+check("add tag into a new ini -> createdFile", r["ok"] and (r["data"].get("createdFile") or "").replace("\\", "/").endswith("Config/Tags/EWTestTmpTags.ini"), r)
+check("the tag ini exists after the add", tmp_ini.is_file(), str(tmp_ini))
+r = c("gameplay_tag_remove", {"tag": "EWTest.Tmp.One"})
+check("removing the last tag deletes the ini it created", r["ok"]
+      and (r["data"].get("removedFile") or "").replace("\\", "/").endswith("Config/Tags/EWTestTmpTags.ini") and not tmp_ini.is_file(), r)
 check("no EWTest tags left", ew_tags() == [], ew_tags())
 
 done()

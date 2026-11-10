@@ -172,6 +172,26 @@ check("mesh_set_material by index", r["ok"] and c("mesh_info", {"path": mesh_pat
 r = c("mesh_set_material", {"path": mesh_path, "slot": "NoSuchSlot", "material": A + "/MI_EWRed"})
 check("unknown slot -> UNKNOWN_SLOT", not r["ok"] and r["errorCode"] == "UNKNOWN_SLOT", r)
 
+# --- a set of assets that only reference each other is deleted in one call (String Table too)
+D = ROOT + "/DeleteSet"
+D_PATHS = [D + "/E_EWDel", D + "/S_EWDel", D + "/DT_EWDel", D + "/M_EWDel", D + "/MI_EWDel", D + "/ST_EWDel"]
+delete_if_exists(*D_PATHS)
+created = [
+    c("enum_create", {"path": D + "/E_EWDel", "values": ["A", "B"]}),
+    c("struct_create", {"path": D + "/S_EWDel", "fields": [{"name": "Kind", "type": "enum:" + D + "/E_EWDel"}]}),
+    c("datatable_create", {"path": D + "/DT_EWDel", "rowStruct": D + "/S_EWDel"}),
+    c("material_create", {"path": D + "/M_EWDel"}),
+    c("material_instance_create", {"path": D + "/MI_EWDel", "parent": D + "/M_EWDel"}),
+    c("stringtable_set", {"path": D + "/ST_EWDel", "create": True}),
+]
+check("delete set: enum, struct, DataTable, material, instance and String Table created", all(x["ok"] for x in created), created)
+r = c("asset_delete", {"paths": D_PATHS})
+check("asset_delete deletes a set that only references itself (referencers first, String Table too)",
+      r["ok"] and r["data"]["deleted"] == 6, r)
+r = c("asset_find", {"folder": D})
+check("delete set: none of the six assets is left", r["ok"] and r["data"]["total"] == 0, r)
+delete_if_exists(*D_PATHS)
+
 # --- validation
 r = c("validate", {"folder": ROOT, "checks": ["blueprints", "references", "data"]})
 check("validate test folder: blueprints compile, no broken references", r["data"]["blueprints"].get("failed", 0) == 0 and r["data"]["references"]["broken"] == [], r)
