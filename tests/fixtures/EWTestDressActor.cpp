@@ -1,5 +1,6 @@
 #include "EWTestDressActor.h"
 
+#include "Camera/CameraComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -11,6 +12,11 @@ AEWTestDressActor::AEWTestDressActor()
 	RootComponent = Base;
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (Cube.Succeeded()) { Base->SetStaticMesh(Cube.Object); }
+	Cam = CreateDefaultSubobject<UCameraComponent>(TEXT("Cam"));
+	Cam->SetupAttachment(RootComponent);
+	Cam->SetRelativeLocation(FVector(-800, 0, 400));
+	Cam->SetRelativeRotation(FRotator(-20, 0, 0));
+	Cam->FieldOfView = 60.f;
 }
 
 void AEWTestDressActor::BeginPlay()

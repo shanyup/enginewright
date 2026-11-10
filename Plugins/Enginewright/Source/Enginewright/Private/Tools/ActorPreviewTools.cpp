@@ -162,7 +162,7 @@ void RegisterActorPreviewTools(FEWRegistry& R)
 			"lighting":{"type":"string","enum":["default","none"],"description":"isolated: default = sun and sky light; none = only what the class brings."},
 			"exposure":{"type":"number","description":"isolated: fixed exposure in EV100, default 5 (lower is brighter). world level: exposure bias in EV added to the level's own exposure (default none)."},
 			"width":{"type":"integer","description":"Default 1280."},"height":{"type":"integer","description":"Default 720."},
-			"view":{"type":"string","enum":["iso","front","back","left","right","top"],"description":"Where the camera looks from when it frames the result. Default iso."},
+			"view":{"type":"string","enum":["iso","front","back","left","right","top","camera"],"description":"Where the camera looks from when it frames the result. Default iso. camera: the first Camera component of the built actor (a deck or station that brings its own game camera), with its field of view, so the image matches a game_run shot of the same actor."},
 			"yaw":{"type":"number","description":"Camera yaw around the result in degrees (overrides view)."},
 			"pitch":{"type":"number","description":"Camera pitch in degrees, negative looks down (overrides view)."},
 			"distance":{"type":"number","description":"Camera distance from the result center in cm (default: fits everything)."},
@@ -291,6 +291,27 @@ void RegisterActorPreviewTools(FEWRegistry& R)
 				CamLoc = P.CameraActor->GetActorLocation();
 				CamRot = P.CameraActor->GetActorRotation();
 				if (CamActorFov > 0 && !Args->HasField(TEXT("fov"))) { Fov = CamActorFov; }
+			}
+			else if (P.View == TEXT("camera") && !P.bCamLoc)
+			{
+				UCameraComponent* Cam = nullptr;
+				for (AActor* A : NewActors)
+				{
+					if (!IsValid(A)) { continue; }
+					Cam = A->FindComponentByClass<UCameraComponent>();
+					if (Cam) { break; }
+				}
+				if (!Cam)
+				{
+					TArray<AActor*> Doomed2 = NewActors;
+					DestroyAll(World, Doomed2);
+					Scene.Reset();
+					if (LevelPackage && !bWasDirty) { LevelPackage->SetDirtyFlag(false); }
+					return Bad(TEXT("NO_CAMERA"), TEXT("view camera: the built actor has no Camera component. Use iso, front, top ... or give cameraLocation and lookAt."));
+				}
+				CamLoc = Cam->GetComponentLocation();
+				CamRot = Cam->GetComponentRotation();
+				if (!Args->HasField(TEXT("fov"))) { Fov = Cam->FieldOfView; }
 			}
 			else if (P.bCamLoc)
 			{
