@@ -2,6 +2,10 @@
 #include "EWCommon.h"
 
 #include "Camera/PlayerCameraManager.h"
+#include "Containers/Ticker.h"
+#include "GameFramework/PawnMovementComponent.h"
+#include "NavigationPath.h"
+#include "NavigationSystem.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -348,6 +352,126 @@ void RegisterPieTools(FEWRegistry& R)
 				if (WeakPC.IsValid()) { WeakPC->InputKey(FInputKeyEventArgs::CreateSimulated(Key, IE_Released, 0.0f)); }
 				Done(FEWResult::Ok(Data, TEXT("Key pressed and released.")));
 			});
+		});
+
+	R.RegisterAsync(TEXT("pie_walk_to"),
+		TEXT("Walk a Play In Editor player's pawn to a world position, like a player holding the move keys: every frame it adds movement input toward the target, so the game's own movement (speed, collision, animation) does the walking. With a navigation mesh in the level (mode auto, the default) it follows the navmesh path; without one it walks straight. Stops when the pawn is within acceptRadius (ok, reached), when it has not moved for stuckSeconds (STUCK, with the last position and the blocking hint), or after timeout seconds (TIMEOUT). Every reply carries the final location and distance. Use pie_state to read positions and pie_input for single key presses."),
+		TEXT(R"({"type":"object","properties":{
+			"x":{"type":"number","description":"Target world X."},
+			"y":{"type":"number","description":"Target world Y."},
+			"z":{"type":"number","description":"Target world Z. Omit to ignore height (distance is then measured on the ground plane)."},
+			"player":{"type":"integer","description":"Local player index (0 = first / host). Default 0."},
+			"acceptRadius":{"type":"number","description":"Reached when closer than this many units. Default 80."},
+			"timeout":{"type":"number","description":"Give up after this many seconds. Default 30, max 300."},
+			"stuckSeconds":{"type":"number","description":"STUCK when the pawn moved less than 10 units in this time. Default 2."},
+			"mode":{"type":"string","enum":["auto","navmesh","direct"],"description":"auto (default): navmesh path when one exists, else straight; navmesh: fail with NO_NAVMESH when there is no path; direct: straight line, no navmesh."}},
+			"required":["x","y"]})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			FString Err;
+			APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
+			if (!PC) { Done(FEWResult::Error(TEXT("NO_PLAYER"), Err)); return; }
+			APawn* Pawn = PC->GetPawn();
+			if (!Pawn) { Done(FEWResult::Error(TEXT("NO_PAWN"), TEXT("This player has no pawn yet (the game may still be loading or spawning).")));  return; }
+			if (!Pawn->GetMovementComponent()) { Done(FEWResult::Error(TEXT("NO_MOVEMENT"), FString::Printf(TEXT("%s has no movement component, so movement input does nothing."), *Pawn->GetClass()->GetName()))); return; }
+			if (PC->IsMoveInputIgnored()) { Done(FEWResult::Error(TEXT("MOVE_INPUT_IGNORED"), TEXT("The game ignores this player's move input right now (a cutscene, menu or tutorial gate usually sets it). Finish that first; ui_state shows what is on screen."))); return; }
+			const FString Mode = Args->HasField(TEXT("mode")) ? EW::Str(Args, TEXT("mode")).ToLower() : TEXT("auto");
+			if (Mode != TEXT("auto") && Mode != TEXT("navmesh") && Mode != TEXT("direct")) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("mode must be auto, navmesh or direct."))); return; }
+			const float Accept = (float)EW::Num(Args, TEXT("acceptRadius"), 80);
+			const float Timeout = (float)EW::Num(Args, TEXT("timeout"), 30);
+			const float StuckSeconds = (float)EW::Num(Args, TEXT("stuckSeconds"), 2);
+			if (Accept < 1.f || Accept > 100000.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("acceptRadius must be 1 to 100000."))); return; }
+			if (Timeout <= 0.f || Timeout > 300.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("timeout must be above 0 and at most 300 seconds."))); return; }
+			if (StuckSeconds < 0.5f || StuckSeconds > 30.f) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("stuckSeconds must be 0.5 to 30."))); return; }
+			const bool bHasZ = Args->HasField(TEXT("z"));
+			const FVector Start = Pawn->GetActorLocation();
+			const FVector Target((float)EW::Num(Args, TEXT("x"), 0), (float)EW::Num(Args, TEXT("y"), 0), bHasZ ? (float)EW::Num(Args, TEXT("z"), 0) : Start.Z);
+
+			// Waypoints: the navmesh path, or the target itself.
+			TArray<FVector> Way;
+			FString Used = TEXT("direct");
+			if (Mode != TEXT("direct"))
+			{
+				UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Pawn->GetWorld());
+				UNavigationPath* Path = (Nav && Nav->GetDefaultNavDataInstance()) ? Nav->FindPathToLocationSynchronously(Pawn->GetWorld(), Start, Target, Pawn) : nullptr;
+				if (Path && Path->IsValid() && Path->PathPoints.Num() > 1)
+				{
+					for (int32 i = 1; i < Path->PathPoints.Num(); ++i) { Way.Add(Path->PathPoints[i]); }
+					Used = TEXT("navmesh");
+					if (Path->IsPartial()) { Used = TEXT("navmeshPartial"); }
+				}
+				else if (Mode == TEXT("navmesh")) { Done(FEWResult::Error(TEXT("NO_NAVMESH"), TEXT("No navigation path to the target: the level has no navmesh, or the target is off it. Use mode auto or direct."))); return; }
+			}
+			if (Way.Num() == 0) { Way.Add(Target); }
+
+			struct FWalk
+			{
+				TWeakObjectPtr<APawn> Pawn;
+				TWeakObjectPtr<APlayerController> PC;
+				TArray<FVector> Way;
+				int32 Index = 0;
+				FVector Target, Start, SamplePos;
+				bool bHasZ = false;
+				double T0 = 0, SampleTime = 0, End = 0;
+				float Accept = 80, StuckSeconds = 2;
+				FString Mode;
+			};
+			TSharedRef<FWalk> W = MakeShared<FWalk>();
+			W->Pawn = Pawn; W->PC = PC; W->Way = Way; W->Target = Target; W->Start = Start; W->SamplePos = Start; W->bHasZ = bHasZ;
+			W->T0 = W->SampleTime = FPlatformTime::Seconds(); W->End = W->T0 + Timeout; W->Accept = Accept; W->StuckSeconds = StuckSeconds; W->Mode = Used;
+
+			auto Report = [](const FWalk& Wk, APawn* P, const TCHAR* Status) -> TSharedRef<FJsonObject>
+			{
+				TSharedRef<FJsonObject> D = MakeShared<FJsonObject>();
+				const FVector L = P ? P->GetActorLocation() : Wk.SamplePos;
+				const FVector Delta = Wk.Target - L;
+				D->SetStringField(TEXT("status"), Status);
+				D->SetBoolField(TEXT("reached"), FCString::Strcmp(Status, TEXT("reached")) == 0);
+				D->SetArrayField(TEXT("location"), Vec(L));
+				D->SetArrayField(TEXT("target"), Vec(Wk.Target));
+				D->SetNumberField(TEXT("distance"), FMath::RoundToDouble((Wk.bHasZ ? Delta.Size() : Delta.Size2D()) * 10) / 10);
+				D->SetNumberField(TEXT("seconds"), FMath::RoundToDouble((FPlatformTime::Seconds() - Wk.T0) * 100) / 100);
+				D->SetStringField(TEXT("mode"), Wk.Mode);
+				D->SetNumberField(TEXT("waypoints"), Wk.Way.Num());
+				return D;
+			};
+
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([W, Done, Report](float) -> bool
+			{
+				APawn* P = W->Pawn.Get();
+				APlayerController* Ctl = W->PC.Get();
+				if (!P || !Ctl || !EW::IsPlaying()) { Done(FEWResult::Error(TEXT("PIE_STOPPED"), TEXT("The pawn or Play In Editor went away while walking."))); return false; }
+				const FVector L = P->GetActorLocation();
+				const double Now = FPlatformTime::Seconds();
+				const FVector ToTarget = W->Target - L;
+				if ((W->bHasZ ? ToTarget.Size() : ToTarget.Size2D()) <= W->Accept)
+				{
+					Done(FEWResult::Ok(Report(*W, P, TEXT("reached")), TEXT("Reached the target.")));
+					return false;
+				}
+				// Next waypoint: skip the ones already close (the last one uses the accept radius above).
+				while (W->Index < W->Way.Num() - 1 && (W->Way[W->Index] - L).Size2D() < FMath::Max(60.f, W->Accept * 0.5f)) { ++W->Index; }
+				FVector Dir = W->Way[W->Index] - L;
+				Dir.Z = 0;
+				if (!Dir.IsNearlyZero()) { P->AddMovementInput(Dir.GetSafeNormal(), 1.0f); }
+				if ((L - W->SamplePos).Size() > 10.f) { W->SamplePos = L; W->SampleTime = Now; }
+				else if (Now - W->SampleTime > W->StuckSeconds)
+				{
+					FEWResult Res = FEWResult::Error(TEXT("STUCK"), FString::Printf(TEXT("The pawn did not move for %.1f s at %.0f, %.0f, %.0f (something blocks it, or the game does not use movement input). Look at screenshot, ui_state (a menu may own the input) and pie_state."), W->StuckSeconds, L.X, L.Y, L.Z));
+					Res.Data = Report(*W, P, TEXT("stuck"));
+					Done(Res);
+					return false;
+				}
+				if (Now > W->End)
+				{
+					FEWResult Res = FEWResult::Error(TEXT("TIMEOUT"), TEXT("The pawn did not reach the target in time. data has its last position."));
+					Res.Data = Report(*W, P, TEXT("timeout"));
+					Done(Res);
+					return false;
+				}
+				return true;
+			}));
 		});
 
 	R.Register(TEXT("screenshot"),

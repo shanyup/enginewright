@@ -42,6 +42,7 @@ void RegisterLocalizationTools(FEWRegistry& R);
 void RegisterLocGatherTools(FEWRegistry& R);
 void EWStopLocRuns();
 void RegisterGameRunTools(FEWRegistry& R);
+void RegisterSaveGameTools(FEWRegistry& R);
 void RegisterImageTools(FEWRegistry& R);
 void RegisterEditorUITools(FEWRegistry& R);
 void EWStopGameRuns();
@@ -156,6 +157,7 @@ void FEnginewrightModule::StartupModule()
 	RegisterPieTools(Reg);
 	RegisterInputTools(Reg);
 	RegisterGameRunTools(Reg);
+	RegisterSaveGameTools(Reg);
 	Reg.SetCategory(TEXT("Multiplayer"));
 	RegisterMultiplayerTools(Reg);
 	Reg.SetCategory(TEXT("Build"));

@@ -1,4 +1,4 @@
-"""Play In Editor tests: start/stop, state, game camera screenshot, synthetic input, log wait,
+"""Play In Editor tests: start/stop, state, game camera screenshot, synthetic input, pie_walk_to, log wait,
 console commands per player, and a 2-player listen-server session.
 
 Needs a running editor on ENGINEWRIGHT_TEST_PROJECT whose open level has a player start or default pawn.
@@ -20,6 +20,9 @@ r = c("screenshot", {"source": "game"})
 check("game screenshot without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 r = c("pie_input", {"key": "SpaceBar"})
 check("pie_input without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
+
+r = c("pie_walk_to", {"x": 0, "y": 0})
+check("pie_walk_to without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 
 # --- single player
 t0 = time.time()
@@ -57,6 +60,48 @@ r = c("pie_input", {"key": "W", "seconds": 1.0})
 after = c("pie_state")["data"]["worlds"][0]["players"][0]["location"]
 moved = sum((a - b) ** 2 for a, b in zip(after, before)) ** 0.5
 check("pie_input key W held 1 s moves the default pawn", r["ok"] and moved > 50, {"r": r, "before": before, "after": after})
+# pie_walk_to (ER-22): the pawn walks to a position with movement input
+def loc():
+    return c("pie_state")["data"]["worlds"][0]["players"][0]["location"]
+
+
+def dist2d(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
+r = c("pie_walk_to", {"y": 0})
+check("pie_walk_to without x -> MISSING_ARGUMENT", not r["ok"] and r["errorCode"] == "MISSING_ARGUMENT", r)
+r = c("pie_walk_to", {"x": 0, "y": 0, "mode": "fly"})
+check("pie_walk_to bad mode -> error", not r["ok"] and r["errorCode"] in ("INVALID_ARGUMENT", "SCHEMA", "INVALID_VALUE"), r)
+r = c("pie_walk_to", {"x": 0, "y": 0, "acceptRadius": 0})
+check("pie_walk_to acceptRadius 0 -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_walk_to", {"x": 0, "y": 0, "timeout": 0})
+check("pie_walk_to timeout 0 -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_walk_to", {"x": 0, "y": 0, "stuckSeconds": 0.1})
+check("pie_walk_to stuckSeconds below 0.5 -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("pie_walk_to", {"x": 0, "y": 0, "player": 3})
+check("pie_walk_to missing player -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
+
+start = loc()
+target = [start[0] + 600, start[1] + 300]
+r = c("pie_walk_to", {"x": target[0], "y": target[1], "timeout": 30, "mode": "direct"}, timeout=60)
+end = loc()
+check("pie_walk_to reaches the target (data and pie_state agree)", r["ok"] and r["data"]["status"] == "reached" and r["data"]["reached"] is True
+      and r["data"]["distance"] <= 80 and dist2d(end, target) < 130 and r["data"]["mode"] == "direct", {"r": r, "end": end, "target": target})
+check("pie_walk_to reports location, target and seconds", r["ok"] and len(r["data"]["location"]) == 3 and len(r["data"]["target"]) == 3 and r["data"]["seconds"] > 0.1, r)
+r = c("pie_walk_to", {"x": end[0], "y": end[1], "acceptRadius": 500})
+check("pie_walk_to when already inside acceptRadius returns at once", r["ok"] and r["data"]["status"] == "reached" and r["data"]["seconds"] < 1.0, r)
+r = c("pie_walk_to", {"x": end[0] + 900000, "y": end[1], "timeout": 1, "stuckSeconds": 30}, timeout=30)
+check("pie_walk_to timeout -> TIMEOUT with the last location", not r["ok"] and r["errorCode"] == "TIMEOUT" and r["data"]["status"] == "timeout"
+      and r["data"]["reached"] is False and r["data"]["distance"] > 1000, r)
+r = c("pie_walk_to", {"x": end[0] + 500, "y": end[1], "mode": "navmesh", "timeout": 5}, timeout=30)
+check("pie_walk_to mode navmesh without a navmesh -> NO_NAVMESH (or walks when the level has one)", (not r["ok"] and r["errorCode"] == "NO_NAVMESH") or (r["ok"] and r["data"]["mode"].startswith("navmesh")), r)
+c("console_command", {"command": "slomo 0.0001"})
+r = c("pie_walk_to", {"x": end[0] + 5000, "y": end[1], "timeout": 20, "stuckSeconds": 1}, timeout=40)
+c("console_command", {"command": "slomo 1"})
+check("pie_walk_to detects a pawn that does not move -> STUCK with the position", not r["ok"] and r["errorCode"] == "STUCK" and r["data"]["status"] == "stuck"
+      and len(r["data"]["location"]) == 3 and "did not move" in r["message"], r)
+
 r = c("pie_input", {"key": "Spacebarr"})
 check("unknown key -> suggestion", not r["ok"] and r["errorCode"] == "UNKNOWN_KEY" and "SpaceBar" in r.get("suggestions", []), r)
 r = c("pie_input", {"key": "W", "action": "/Game/X"})

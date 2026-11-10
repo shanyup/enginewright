@@ -1,4 +1,4 @@
-"""Runtime UI tests (UMG + CommonUI): ui_open / ui_state / ui_click / ui_close in Play In Editor, CommonUI assets
+"""Runtime UI tests (UMG + CommonUI): ui_open / ui_state / ui_click / ui_key / ui_close in Play In Editor, CommonUI assets
 built with the generic tools (text/button style Blueprints, activatable page, CommonButtonBase, CommonTextBlock with a style).
 
 Needs a running editor on ENGINEWRIGHT_TEST_PROJECT with the CommonUI plugin enabled (the CommonUI part is skipped
@@ -81,6 +81,8 @@ else:
 # --- Play In Editor
 r = c("ui_state")
 check("ui_state without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
+r = c("ui_key", {"key": "Enter"})
+check("ui_key without PIE -> NO_PLAYER", not r["ok"] and r["errorCode"] == "NO_PLAYER", r)
 ok(c("pie_start", {"timeout": 90}), "pie_start")
 r = c("ui_open", {"class": CLICK})
 check("ui_open puts the screen in the viewport", r["ok"] and r["data"]["inViewport"], r)
@@ -114,6 +116,35 @@ if shot["ok"] and scene["ok"]:
     diff = sum(1 for i in range(0, min(len(a), len(b)), 4) if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > 60)
     check("the UI capture shows the menu (differs from the scene-only capture)", (w1, h1) == (w2, h2) and diff > 0.005 * w1 * h1,
           {"size": [w1, h1, w2, h2], "changedPixels": diff})
+# --- ui_key (ER-21): a key or mouse button through Slate to the focused widget
+r = c("ui_key", {})
+check("ui_key without key or mouseButton -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("ui_key", {"key": "Enter", "mouseButton": "Left", "x": 1, "y": 1})
+check("ui_key with key and mouseButton -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("ui_key", {"key": "Enterr"})
+check("ui_key unknown key -> UNKNOWN_KEY with suggestions", not r["ok"] and r["errorCode"] == "UNKNOWN_KEY" and "Enter" in r.get("suggestions", []), r)
+r = c("ui_key", {"mouseButton": "Left"})
+check("ui_key mouseButton without x, y -> INVALID_ARGUMENT", not r["ok"] and r["errorCode"] == "INVALID_ARGUMENT", r)
+r = c("ui_key", {"key": "Enter", "event": "hold"})
+check("ui_key bad event -> INVALID_ARGUMENT / schema error", not r["ok"] and r["errorCode"] in ("INVALID_ARGUMENT", "SCHEMA", "INVALID_VALUE"), r)
+r = c("ui_key", {"key": "Enter", "focus": "NoSuchWidget"})
+check("ui_key focus on an unknown widget -> WIDGET_NOT_FOUND", not r["ok"] and r["errorCode"] == "WIDGET_NOT_FOUND", r)
+r = c("ui_key", {"key": "Enter", "focus": "Cover"})
+check("ui_key focus on a widget that cannot take focus -> FOCUS_FAILED", not r["ok"] and r["errorCode"] == "FOCUS_FAILED", r)
+r = c("ui_key", {"key": "Enter", "focus": "OkButton"})
+sent = (r.get("data") or {}).get("sent", {})
+check("ui_key Enter on a focused UMG button: Slate handles it, focus is on that button", r["ok"] and sent.get("handled") is True
+      and sent.get("focusAfter", {}).get("widget") == "OkButton" and sent.get("key") == "Enter", r)
+check("ui_key returns the UI state after the key", r["ok"] and any(b["name"] == "OkButton" for b in r["data"]["buttons"]), r.get("data"))
+r = c("ui_key", {"key": "Enter", "event": "press", "seconds": 0})
+check("ui_key event press only presses", r["ok"] and r["data"]["sent"]["event"] == "press", r)
+r = c("ui_key", {"key": "Enter", "event": "release"})
+check("ui_key event release only releases", r["ok"] and r["data"]["sent"]["event"] == "release", r)
+ok_btn = next((b for b in c("ui_state")["data"]["buttons"] if b["label"] == "OK"), None)
+if ok_btn:
+    cx, cy = (ok_btn["rect"][0] + ok_btn["rect"][2]) / 2, (ok_btn["rect"][1] + ok_btn["rect"][3]) / 2
+    r = c("ui_key", {"mouseButton": "Left", "x": cx, "y": cy})
+    check("ui_key mouse Left over a button: Slate handles the press", r["ok"] and r["data"]["sent"].get("handled") is True and r["data"]["sent"]["mouseButton"] == "Left", r)
 r = c("ui_close", {"widget": "WBP_EWClick"})
 check("ui_close removes it", r["ok"] and not any(b["label"] == "OK" for b in c("ui_state")["data"]["buttons"]), r)
 r = c("ui_close", {"widget": "WBP_EWClick"})
@@ -143,6 +174,25 @@ if common["ok"]:
     d = c("ui_state").get("data") or {}
     check("CommonUI: the stack's top is the pushed page", any(s["name"] == "Stack" and s.get("top", "").startswith("WBP_EWPage") for s in d.get("stacks", [])), d.get("stacks"))
     check("CommonUI: pushed page's buttons are listed", any(b["name"] == "GoButton" for b in d.get("buttons", [])), d.get("buttons"))
+    # --- ER-23: a page below the top of its stack is not listed by default
+    r = c("ui_open", {"class": PAGE, "stack": "Stack"})
+    check("CommonUI: second page pushed onto the same stack", r["ok"] and r["data"]["stackSize"] == 2, r)
+    time.sleep(0.5)
+    d = c("ui_state").get("data") or {}
+    gos = [b for b in d.get("buttons", []) if b["name"] == "GoButton"]
+    check("ui_state: only the top page's button is listed", len(gos) == 1 and gos[0].get("top") is True and gos[0].get("layer") == "Stack", d.get("buttons"))
+    check("ui_state counts what it left out (hiddenButtons)", d.get("hiddenButtons", 0) >= 1 and d.get("includeHidden") is False, {k: d.get(k) for k in ("hiddenButtons", "hiddenWidgets", "includeHidden")})
+    acts = [a for a in d.get("activatableWidgets", []) if a["class"].startswith("WBP_EWPage")]
+    check("ui_state: only the activated top page is listed among activatable widgets", len(acts) == 1 and acts[0]["activated"] and acts[0]["top"], d.get("activatableWidgets"))
+    d2 = c("ui_state", {"includeHidden": True}).get("data") or {}
+    gos2 = [b for b in d2.get("buttons", []) if b["name"] == "GoButton"]
+    check("ui_state includeHidden lists both, the lower one with top false and a reason", len(gos2) == 2 and sorted(b["top"] for b in gos2) == [False, True]
+          and any(b.get("hiddenReason") for b in gos2 if not b["top"]), gos2)
+    r = c("ui_click", {"button": "GoButton"})
+    check("ui_click picks the top page's button, not AMBIGUOUS", r["ok"] and r["data"]["clicked"]["name"] == "GoButton", r)
+    r = c("ui_click", {"button": "Go*"})
+    check("ui_click AMBIGUOUS names page and layer of each candidate", not r["ok"] and r["errorCode"] == "AMBIGUOUS"
+          and all("layer Stack" in x and "page " in x for x in r.get("suggestions", [])) and len(r.get("suggestions", [])) == 2, r)
     r = c("ui_open", {"class": PAGE, "stack": "NoSuchStack"})
     check("ui_open unknown stack -> STACK_NOT_FOUND", not r["ok"] and r["errorCode"] == "STACK_NOT_FOUND", r)
     r = c("ui_open", {"class": CLICK, "stack": "Stack"})

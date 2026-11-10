@@ -19,6 +19,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Framework/Application/SlateUser.h"
 #include "Layout/WidgetPath.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
@@ -214,18 +216,56 @@ namespace
 		UButton* Clickable = nullptr; // the UButton that fires the click (CommonButtonBase: its internal button)
 		FString Label;
 		FString Owner;
+		FString Layer = TEXT("viewport"); // the activatable stack that holds the page, or "viewport" for a plain widget
+		bool bTop = true;                 // false: the page is deactivated or sits below another page of its stack
+		FString HiddenReason;             // why it is not top (for includeHidden and error messages)
 	};
 
-	/** Buttons on this player's screen. A CommonButtonBase is reported once, not with its internal UButton. */
-	TArray<FButtonInfo> Buttons(APlayerController* PC)
+	/**
+	 * Where a widget sits: Layer = the CommonUI stack that holds its page ("viewport" for a plain UMG widget);
+	 * bTop = false when a page above it is not activated, or another page of the same stack is drawn over it.
+	 */
+	void Classify(UWidget* W, const TArray<UWidget*>& Stacks, FString& Layer, bool& bTop, FString& Reason)
+	{
+		Layer = TEXT("viewport");
+		bTop = true;
+		UClass* Act = CommonClass(TEXT("CommonActivatableWidget"));
+		if (!Act) { return; }
+		for (UObject* O = W; O; O = O->GetOuter())
+		{
+			if (!O->IsA(Act)) { continue; }
+			if (!CallBool(O, TEXT("IsActivated")))
+			{
+				bTop = false;
+				if (Reason.IsEmpty()) { Reason = FString::Printf(TEXT("page %s is not activated"), *O->GetClass()->GetName()); }
+			}
+			for (UWidget* S : Stacks)
+			{
+				const TArray<UObject*> List = StackList(S);
+				if (!List.Contains(O)) { continue; }
+				Layer = S->GetName();
+				if (List.Last() != O)
+				{
+					bTop = false;
+					if (Reason.IsEmpty()) { Reason = FString::Printf(TEXT("page %s is below %s on stack %s"), *O->GetClass()->GetName(), List.Last() ? *List.Last()->GetClass()->GetName() : TEXT("?"), *S->GetName()); }
+				}
+			}
+		}
+	}
+
+	/** Buttons on this player's screen. A CommonButtonBase is reported once, not with its internal UButton.
+	 *  Off-screen buttons are skipped unless bIncludeOffscreen. */
+	TArray<FButtonInfo> Buttons(APlayerController* PC, bool bIncludeOffscreen = false)
 	{
 		TArray<FButtonInfo> Out;
 		UClass* CBB = CommonClass(TEXT("CommonButtonBase"));
+		const TArray<UWidget*> Stacks = Containers(PC);
 		TSet<UWidget*> Seen;
 		for (TObjectIterator<UButton> It; It; ++It)
 		{
 			UButton* B = *It;
-			if (!IsValid(B) || B->GetWorld() != PC->GetWorld() || !OnScreen(B)) { continue; }
+			if (!IsValid(B) || B->GetWorld() != PC->GetWorld() || (!bIncludeOffscreen && !OnScreen(B))) { continue; }
+			if (bIncludeOffscreen && !B->GetCachedWidget().IsValid()) { continue; }
 			UUserWidget* OwnerWidget = B->GetTypedOuter<UUserWidget>();
 			if (OwnerWidget && OwnerWidget->GetOwningPlayer() && OwnerWidget->GetOwningPlayer() != PC) { continue; }
 			FButtonInfo I;
@@ -236,9 +276,62 @@ namespace
 			I.Label = Label(I.Widget);
 			UUserWidget* Page = I.Widget->GetTypedOuter<UUserWidget>();
 			I.Owner = Page ? Page->GetClass()->GetName() : FString();
+			Classify(I.Widget, Stacks, I.Layer, I.bTop, I.HiddenReason);
+			if (!OnScreen(I.Widget) && I.HiddenReason.IsEmpty()) { I.HiddenReason = TEXT("not drawn (hidden, collapsed or zero size)"); }
 			Out.Add(I);
 		}
 		return Out;
+	}
+
+	/** Visible and on the top page of its stack: what the player can use right now. */
+	bool IsUsable(const FButtonInfo& B) { return B.bTop && OnScreen(B.Widget); }
+
+	bool ParseKeyName(const FString& Name, FKey& Out)
+	{
+		Out = FKey(FName(*Name));
+		if (Out.IsValid()) { return true; }
+		TArray<FKey> All;
+		EKeys::GetAllKeys(All);
+		for (const FKey& K : All) { if (K.GetFName().ToString().Equals(Name, ESearchCase::IgnoreCase)) { Out = K; return true; } }
+		return false;
+	}
+
+	TArray<FString> SuggestKeys(const FString& Name)
+	{
+		TArray<FKey> All;
+		EKeys::GetAllKeys(All);
+		TArray<FString> Names;
+		for (const FKey& K : All) { Names.Add(K.GetFName().ToString()); }
+		return EW::Suggest(Name, Names);
+	}
+
+	/** What has user focus: the Slate widget type and the UMG widget (and page) that owns it. */
+	TSharedRef<FJsonObject> FocusInfo(APlayerController* PC, int32 UserIndex)
+	{
+		TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+		TSharedPtr<SWidget> F = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetUserFocusedWidget(UserIndex) : nullptr;
+		J->SetBoolField(TEXT("focused"), F.IsValid());
+		J->SetStringField(TEXT("slateType"), F.IsValid() ? F->GetType().ToString() : TEXT("none"));
+		if (!F.IsValid()) { return J; }
+		TMap<const SWidget*, UWidget*> Owners;
+		for (TObjectIterator<UWidget> It; It; ++It)
+		{
+			UWidget* W = *It;
+			if (IsValid(W) && W->GetWorld() == PC->GetWorld() && W->GetCachedWidget().IsValid()) { Owners.Add(W->GetCachedWidget().Get(), W); }
+		}
+		for (TSharedPtr<SWidget> P = F; P.IsValid(); P = P->GetParentWidget())
+		{
+			if (UWidget* const* W = Owners.Find(P.Get()))
+			{
+				J->SetStringField(TEXT("widget"), (*W)->GetName());
+				J->SetStringField(TEXT("class"), (*W)->GetClass()->GetName());
+				UUserWidget* Page = (*W)->GetTypedOuter<UUserWidget>();
+				if (UUserWidget* Self = Cast<UUserWidget>(*W)) { Page = Self; }
+				if (Page) { J->SetStringField(TEXT("page"), Page->GetClass()->GetName()); }
+				break;
+			}
+		}
+		return J;
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Rect(UWidget* W, const FGeometry& VP)
@@ -250,7 +343,8 @@ namespace
 			MakeShared<FJsonValueNumber>(FMath::RoundToDouble(BR.X)), MakeShared<FJsonValueNumber>(FMath::RoundToDouble(BR.Y)) };
 	}
 
-	TSharedRef<FJsonObject> UiState(APlayerController* PC)
+	/** Lists only what the player can use now (visible, top page); bIncludeHidden adds the rest with the reason. */
+	TSharedRef<FJsonObject> UiState(APlayerController* PC, bool bIncludeHidden = false)
 	{
 		TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 		FGeometry VP;
@@ -258,6 +352,8 @@ namespace
 		UWorld* World = PC->GetWorld();
 
 		TArray<TSharedPtr<FJsonValue>> Screens;
+		int32 HiddenWidgets = 0, HiddenButtons = 0;
+		const TArray<UWidget*> StackWidgets = Containers(PC);
 		for (TObjectIterator<UUserWidget> It; It; ++It)
 		{
 			UUserWidget* U = *It;
@@ -266,7 +362,9 @@ namespace
 			TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
 			J->SetStringField(TEXT("name"), U->GetName());
 			J->SetStringField(TEXT("class"), U->GetClass()->GetName());
-			J->SetBoolField(TEXT("visible"), OnScreen(U));
+			const bool bVisible = OnScreen(U);
+			J->SetBoolField(TEXT("visible"), bVisible);
+			if (!bVisible && !bIncludeHidden) { ++HiddenWidgets; continue; }
 			Screens.Add(MakeShared<FJsonValueObject>(J));
 		}
 		Data->SetArrayField(TEXT("viewportWidgets"), Screens);
@@ -283,12 +381,20 @@ namespace
 				if (!IsValid(U) || !U->IsA(Activatable) || U->GetWorld() != World) { continue; }
 				if (U->GetOwningPlayer() && U->GetOwningPlayer() != PC) { continue; }
 				const bool bActive = CallBool(U, TEXT("IsActivated"));
-				if (!bActive && !OnScreen(U)) { continue; }
+				const bool bVisible = OnScreen(U);
+				if (!bActive && !bVisible) { continue; }
+				FString Layer, Reason;
+				bool bTop = true;
+				Classify(U, StackWidgets, Layer, bTop, Reason);
 				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
 				J->SetStringField(TEXT("name"), U->GetName());
 				J->SetStringField(TEXT("class"), U->GetClass()->GetName());
 				J->SetBoolField(TEXT("activated"), bActive);
-				J->SetBoolField(TEXT("visible"), OnScreen(U));
+				J->SetBoolField(TEXT("visible"), bVisible);
+				J->SetStringField(TEXT("layer"), Layer);
+				J->SetBoolField(TEXT("top"), bTop);
+				if (!Reason.IsEmpty()) { J->SetStringField(TEXT("hiddenReason"), Reason); }
+				if (!bIncludeHidden && !(bActive && bVisible && bTop)) { ++HiddenWidgets; continue; }
 				Acts.Add(MakeShared<FJsonValueObject>(J));
 			}
 			Data->SetArrayField(TEXT("activatableWidgets"), Acts);
@@ -314,21 +420,28 @@ namespace
 		}
 
 		TArray<TSharedPtr<FJsonValue>> Btns;
-		for (const FButtonInfo& B : Buttons(PC))
+		for (const FButtonInfo& B : Buttons(PC, bIncludeHidden))
 		{
+			if (!IsUsable(B) && !bIncludeHidden) { ++HiddenButtons; continue; }
 			TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
 			J->SetStringField(TEXT("name"), B.Widget->GetName());
 			J->SetStringField(TEXT("class"), B.Widget->GetClass()->GetName());
 			J->SetStringField(TEXT("label"), B.Label);
 			J->SetStringField(TEXT("page"), B.Owner);
+			J->SetStringField(TEXT("layer"), B.Layer);
+			J->SetBoolField(TEXT("top"), B.bTop);
+			J->SetBoolField(TEXT("visible"), OnScreen(B.Widget));
+			if (!B.HiddenReason.IsEmpty()) { J->SetStringField(TEXT("hiddenReason"), B.HiddenReason); }
 			J->SetBoolField(TEXT("enabled"), B.Widget->GetIsEnabled() && B.Clickable->GetIsEnabled());
 			if (B.Widget != B.Clickable && B.Widget->FindFunction(TEXT("GetSelected"))) { J->SetBoolField(TEXT("selected"), CallBool(B.Widget, TEXT("GetSelected"))); }
 			if (B.Widget != B.Clickable && B.Widget->FindFunction(TEXT("IsInteractionEnabled"))) { J->SetBoolField(TEXT("interactionEnabled"), CallBool(B.Widget, TEXT("IsInteractionEnabled"))); }
 			J->SetStringField(TEXT("path"), B.Widget->GetPathName());
-			if (bVP) { J->SetArrayField(TEXT("rect"), Rect(B.Widget, VP)); }
+			if (bVP && B.Widget->GetCachedWidget().IsValid()) { J->SetArrayField(TEXT("rect"), Rect(B.Widget, VP)); }
 			Btns.Add(MakeShared<FJsonValueObject>(J));
 		}
 		Data->SetArrayField(TEXT("buttons"), Btns);
+		Data->SetBoolField(TEXT("includeHidden"), bIncludeHidden);
+		if (!bIncludeHidden) { Data->SetNumberField(TEXT("hiddenButtons"), HiddenButtons); Data->SetNumberField(TEXT("hiddenWidgets"), HiddenWidgets); }
 		return Data;
 	}
 }
@@ -336,19 +449,21 @@ namespace
 void RegisterUIRuntimeTools(FEWRegistry& R)
 {
 	R.Register(TEXT("ui_state"),
-		TEXT("What a Play In Editor player's UI shows: widgets in the viewport, CommonUI activatable widgets (activated or not) and activatable stacks with their widget list and top, and every visible button (UMG Button or CommonButtonBase) with label, page, enabled and its rectangle in viewport pixels."),
-		TEXT(R"({"type":"object","properties":{"player":{"type":"integer","description":"Local player index, default 0."}}})"),
+		TEXT("What a Play In Editor player's UI shows right now: widgets in the viewport, CommonUI activatable widgets and activatable stacks with their widget list and top, and the buttons (UMG Button or CommonButtonBase) with label, page, layer (the stack holding the page), enabled and rectangle in viewport pixels. By default it lists only what the player can use: visible, on the top page of its stack, page activated. A closed or covered page (for example the old Back/Save after Settings closed) is left out and counted in hiddenButtons / hiddenWidgets. includeHidden lists everything, with top, visible, layer and hiddenReason per item."),
+		TEXT(R"({"type":"object","properties":{
+			"player":{"type":"integer","description":"Local player index, default 0."},
+			"includeHidden":{"type":"boolean","description":"Also list widgets and buttons that are hidden, covered by a higher page, or on a deactivated page (each with layer, top, visible and hiddenReason). Default false."}}})"),
 		false,
 		[](const TSharedPtr<FJsonObject>& Args) -> FEWResult
 		{
 			FString Err;
 			APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
 			if (!PC) { return Bad(TEXT("NO_PLAYER"), Err); }
-			return FEWResult::Ok(UiState(PC));
+			return FEWResult::Ok(UiState(PC, EW::Bool(Args, TEXT("includeHidden"), false)));
 		});
 
 	R.RegisterAsync(TEXT("ui_click"),
-		TEXT("Click a visible button in Play In Editor, found by widget name or label (wildcards allowed). method click (default) first checks that no other hit-testable widget is drawn over the button center (else COVERED), then presses the Slate button (press + click, as a pointer or gamepad accept does); method event fires the UMG OnClicked directly, even when covered. Returns the UI state after settleSeconds."),
+		TEXT("Click a button the player can use in Play In Editor (visible, on the top page of its stack), found by widget name or label (wildcards allowed). method click (default) first checks that no other hit-testable widget is drawn over the button center (else COVERED), then presses the Slate button (press + click, as a pointer or gamepad accept does); method event fires the UMG OnClicked directly, even when covered. Returns the UI state after settleSeconds."),
 		TEXT(R"({"type":"object","properties":{
 			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
 			"button":{"type":"string","description":"Widget name or label, e.g. Play or *Settings*."},
@@ -366,20 +481,36 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 			if (Method != TEXT("click") && Method != TEXT("event")) { Done(Bad(TEXT("INVALID_ARGUMENT"), TEXT("method must be click or event."))); return; }
 			const float Settle = FMath::Clamp((float)EW::Num(Args, TEXT("settleSeconds"), 0.3), 0.f, 10.f);
 
-			const TArray<FButtonInfo> All = Buttons(PC);
-			TArray<FButtonInfo> Hits;
+			// Only buttons the player can use now (visible, top page of its stack) are candidates; a button on a
+			// closed or covered page is reported as such instead of being clicked.
+			const TArray<FButtonInfo> All = Buttons(PC, /*bIncludeOffscreen*/ true);
+			auto Matches = [&Key](const FButtonInfo& B) { return B.Widget->GetName() == Key || B.Label.Equals(Key, ESearchCase::IgnoreCase) || B.Label.MatchesWildcard(Key) || B.Widget->GetName().MatchesWildcard(Key); };
+			auto Describe = [](const FButtonInfo& B) { return FString::Printf(TEXT("%s (page %s, layer %s)"), *B.Widget->GetName(), *B.Owner, *B.Layer); };
+			TArray<FButtonInfo> Hits, Unusable;
 			TArray<FString> Names;
 			for (const FButtonInfo& B : All)
 			{
+				if (!IsUsable(B)) { if (Matches(B)) { Unusable.Add(B); } continue; }
 				Names.Add(B.Label.IsEmpty() ? B.Widget->GetName() : B.Label);
-				if (B.Widget->GetName() == Key || B.Label.Equals(Key, ESearchCase::IgnoreCase) || B.Label.MatchesWildcard(Key) || B.Widget->GetName().MatchesWildcard(Key)) { Hits.Add(B); }
+				if (Matches(B)) { Hits.Add(B); }
 			}
-			if (Hits.Num() == 0) { Done(Bad(TEXT("BUTTON_NOT_FOUND"), FString::Printf(TEXT("No visible button '%s' on player %d's screen."), *Key, (int32)EW::Num(Args, TEXT("player"), 0)), EW::Suggest(Key, Names))); return; }
+			if (Hits.Num() == 0)
+			{
+				if (Unusable.Num() > 0)
+				{
+					TArray<FString> Where;
+					for (const FButtonInfo& B : Unusable) { Where.Add(FString::Printf(TEXT("%s: %s"), *Describe(B), *B.HiddenReason)); }
+					Done(Bad(TEXT("BUTTON_NOT_FOUND"), FString::Printf(TEXT("'%s' exists only on a page the player cannot use now (see ui_state includeHidden)."), *Key), Where));
+					return;
+				}
+				Done(Bad(TEXT("BUTTON_NOT_FOUND"), FString::Printf(TEXT("No visible button '%s' on player %d's screen."), *Key, (int32)EW::Num(Args, TEXT("player"), 0)), EW::Suggest(Key, Names)));
+				return;
+			}
 			if (Hits.Num() > 1)
 			{
 				TArray<FString> Which;
-				for (const FButtonInfo& B : Hits) { Which.Add(B.Widget->GetName()); }
-				Done(Bad(TEXT("AMBIGUOUS"), FString::Printf(TEXT("%d buttons match '%s'; pass the widget name."), Hits.Num(), *Key), Which));
+				for (const FButtonInfo& B : Hits) { Which.Add(Describe(B)); }
+				Done(Bad(TEXT("AMBIGUOUS"), FString::Printf(TEXT("%d buttons match '%s'; pass the widget name. Candidates are listed as name (page, layer)."), Hits.Num(), *Key), Which));
 				return;
 			}
 			const FButtonInfo B = Hits[0];
@@ -423,6 +554,133 @@ void RegisterUIRuntimeTools(FEWRegistry& R)
 			if (!Btn.IsValid()) { Done(Bad(TEXT("CLICK_FAILED"), FString::Printf(TEXT("'%s' has no Slate button to press."), *B.Widget->GetName()))); return; }
 			Btn->SimulateClick();
 			Finish();
+		});
+
+	R.RegisterAsync(TEXT("ui_key"),
+		TEXT("Send a key or a mouse button to a Play In Editor player's UI through Slate, the same path a keyboard or mouse takes: the key goes to the widget that has user focus (UMG NativeOnKeyDown / OnKeyDown, CommonUI input, text boxes) or, with no focused widget, to the game viewport. Use it for panels that wait for 'press any key' or for a focused widget that ui_click cannot reach. key (e.g. Enter, SpaceBar, E, Escape, Gamepad_FaceButton_Bottom) with event tap (default: press, hold, release), press or release; or mouseButton (Left, Right, Middle) at x, y in viewport pixels. focus first moves user focus to a widget by name or class (wildcards allowed) and fails with FOCUS_FAILED when the widget cannot take focus. Returns what had focus before and after, whether Slate handled the event, and the UI state after settleSeconds. Use pie_input instead for gameplay input (Enhanced Input actions)."),
+		TEXT(R"({"type":"object","properties":{
+			"player":{"type":"integer","description":"Play In Editor player index (0 = first, default 0)."},
+			"key":{"type":"string","description":"Key name, e.g. Enter, SpaceBar, E, Escape, Gamepad_FaceButton_Bottom."},
+			"event":{"type":"string","enum":["tap","press","release"],"description":"tap (default): press, hold for seconds, release."},
+			"seconds":{"type":"number","description":"Hold time for tap, default 0.05. Max 5."},
+			"mouseButton":{"type":"string","enum":["Left","Right","Middle"],"description":"Send a mouse button instead of a key. Needs x and y."},
+			"x":{"type":"number","description":"Mouse x in viewport pixels (as in ui_state rect)."},
+			"y":{"type":"number","description":"Mouse y in viewport pixels."},
+			"focus":{"type":"string","description":"Optional: widget name or class (wildcards allowed) to give user focus before the input."},
+			"settleSeconds":{"type":"number","description":"Wait after the input before reading the UI, default 0.3."}}})"),
+		false,
+		[](const TSharedPtr<FJsonObject>& Args, FEWDone Done)
+		{
+			FString Err;
+			APlayerController* PC = EW::PiePlayer((int32)EW::Num(Args, TEXT("player"), 0), Err);
+			if (!PC) { Done(Bad(TEXT("NO_PLAYER"), Err)); return; }
+			if (!FSlateApplication::IsInitialized()) { Done(Bad(TEXT("NO_SLATE"), TEXT("Slate is not available."))); return; }
+			const FString KeyName = EW::Str(Args, TEXT("key"));
+			const FString MouseName = EW::Str(Args, TEXT("mouseButton"));
+			if (KeyName.IsEmpty() == MouseName.IsEmpty()) { Done(Bad(TEXT("INVALID_ARGUMENT"), TEXT("Pass exactly one of key or mouseButton."))); return; }
+			const FString Event = Args->HasField(TEXT("event")) ? EW::Str(Args, TEXT("event")).ToLower() : TEXT("tap");
+			if (Event != TEXT("tap") && Event != TEXT("press") && Event != TEXT("release")) { Done(Bad(TEXT("INVALID_ARGUMENT"), TEXT("event must be tap, press or release."))); return; }
+			const float Hold = FMath::Clamp((float)EW::Num(Args, TEXT("seconds"), 0.05), 0.f, 5.f);
+			const float Settle = FMath::Clamp((float)EW::Num(Args, TEXT("settleSeconds"), 0.3), 0.f, 10.f);
+			const int32 UserIndex = (PC->GetLocalPlayer() && PC->GetLocalPlayer()->GetSlateUser().IsValid()) ? PC->GetLocalPlayer()->GetSlateUser()->GetUserIndex() : 0;
+
+			FKey Key;
+			if (!KeyName.IsEmpty() && !ParseKeyName(KeyName, Key)) { Done(Bad(TEXT("UNKNOWN_KEY"), FString::Printf(TEXT("No key '%s'."), *KeyName), SuggestKeys(KeyName))); return; }
+			FKey Mouse;
+			FVector2D MouseAbs = FVector2D::ZeroVector;
+			TSharedPtr<SWindow> MouseWindow;
+			if (!MouseName.IsEmpty())
+			{
+				Mouse = MouseName == TEXT("Left") ? EKeys::LeftMouseButton : MouseName == TEXT("Right") ? EKeys::RightMouseButton : EKeys::MiddleMouseButton;
+				if (!Args->HasField(TEXT("x")) || !Args->HasField(TEXT("y"))) { Done(Bad(TEXT("INVALID_ARGUMENT"), TEXT("mouseButton needs x and y (viewport pixels)."))); return; }
+				FGeometry VP;
+				if (!ViewportGeometry(PC, VP)) { Done(Bad(TEXT("NO_VIEWPORT"), TEXT("The player has no game viewport."))); return; }
+				MouseAbs = VP.LocalToAbsolute(FVector2D(EW::Num(Args, TEXT("x"), 0), EW::Num(Args, TEXT("y"), 0)));
+				UGameViewportClient* GVC = PC->GetWorld()->GetGameViewport();
+				MouseWindow = GVC && GVC->GetGameViewportWidget().IsValid() ? FSlateApplication::Get().FindWidgetWindow(GVC->GetGameViewportWidget().ToSharedRef()) : nullptr;
+				if (!MouseWindow.IsValid() || !MouseWindow->GetNativeWindow().IsValid()) { Done(Bad(TEXT("NO_VIEWPORT"), TEXT("The game viewport has no window."))); return; }
+			}
+
+			// Optional focus move.
+			const FString FocusKey = EW::Str(Args, TEXT("focus"));
+			if (!FocusKey.IsEmpty())
+			{
+				TArray<FString> Names;
+				UWidget* Target = nullptr;
+				for (TObjectIterator<UWidget> It; It; ++It)
+				{
+					UWidget* W = *It;
+					if (!IsValid(W) || W->GetWorld() != PC->GetWorld() || !W->GetCachedWidget().IsValid()) { continue; }
+					const FString Cls = W->GetClass()->GetName();
+					Names.Add(W->GetName());
+					if (!Target && (W->GetName() == FocusKey || Cls == FocusKey || Cls == FocusKey + TEXT("_C") || W->GetName().MatchesWildcard(FocusKey) || Cls.MatchesWildcard(FocusKey))) { Target = W; }
+				}
+				if (!Target) { Done(Bad(TEXT("WIDGET_NOT_FOUND"), FString::Printf(TEXT("No widget '%s' on player's screen."), *FocusKey), EW::Suggest(FocusKey, Names))); return; }
+				Target->SetUserFocus(PC);
+				TSharedPtr<SWidget> Now = FSlateApplication::Get().GetUserFocusedWidget(UserIndex);
+				bool bInside = false;
+				for (TSharedPtr<SWidget> P = Now; P.IsValid(); P = P->GetParentWidget()) { if (P == Target->GetCachedWidget()) { bInside = true; break; } }
+				if (!bInside) { Done(Bad(TEXT("FOCUS_FAILED"), FString::Printf(TEXT("%s did not take user focus. A UserWidget needs bIsFocusable (or a focusable child such as a button); the focus is on %s."), *Target->GetName(), *FocusInfo(PC, UserIndex)->GetStringField(TEXT("slateType"))))); return; }
+			}
+
+			TSharedRef<FJsonObject> Sent = MakeShared<FJsonObject>();
+			Sent->SetObjectField(TEXT("focusBefore"), FocusInfo(PC, UserIndex));
+			Sent->SetStringField(TEXT("event"), Event);
+			TWeakObjectPtr<APlayerController> WeakPC = PC;
+
+			auto Finish = [Done, Sent, WeakPC, Settle, UserIndex]()
+			{
+				EW::PollUntil(Settle, []() { return false; }, [Done, Sent, WeakPC, UserIndex]()
+				{
+					if (!WeakPC.IsValid()) { Done(Bad(TEXT("NO_PLAYER"), TEXT("The player went away after the input."))); return; }
+					Sent->SetObjectField(TEXT("focusAfter"), FocusInfo(WeakPC.Get(), UserIndex));
+					TSharedRef<FJsonObject> Data = UiState(WeakPC.Get());
+					Data->SetObjectField(TEXT("sent"), Sent);
+					Done(FEWResult::Ok(Data));
+				});
+			};
+
+			if (!KeyName.IsEmpty())
+			{
+				Sent->SetStringField(TEXT("key"), Key.GetFName().ToString());
+				const uint32* KeyCode = nullptr; const uint32* CharCode = nullptr;
+				FInputKeyManager::Get().GetCodesFromKey(Key, KeyCode, CharCode);
+				const uint32 KC = KeyCode ? *KeyCode : 0, CC = CharCode ? *CharCode : 0;
+				const FKeyEvent Down(Key, FModifierKeysState(), (uint32)UserIndex, false, CC, KC);
+				const FKeyEvent Up(Key, FModifierKeysState(), (uint32)UserIndex, false, CC, KC);
+				if (Event != TEXT("release"))
+				{
+					Sent->SetBoolField(TEXT("handled"), FSlateApplication::Get().ProcessKeyDownEvent(Down));
+					if (CC >= 32 && CC != 127) { FSlateApplication::Get().ProcessKeyCharEvent(FCharacterEvent((TCHAR)CC, FModifierKeysState(), (uint32)UserIndex, false)); }
+				}
+				if (Event == TEXT("press")) { Finish(); return; }
+				if (Event == TEXT("release")) { Sent->SetBoolField(TEXT("handled"), FSlateApplication::Get().ProcessKeyUpEvent(Up)); Finish(); return; }
+				EW::PollUntil(Hold, []() { return false; }, [Up, Finish]()
+				{
+					FSlateApplication::Get().ProcessKeyUpEvent(Up);
+					Finish();
+				});
+				return;
+			}
+
+			Sent->SetStringField(TEXT("mouseButton"), MouseName);
+			Sent->SetNumberField(TEXT("x"), EW::Num(Args, TEXT("x"), 0));
+			Sent->SetNumberField(TEXT("y"), EW::Num(Args, TEXT("y"), 0));
+			const TSharedPtr<FGenericWindow> Native = MouseWindow->GetNativeWindow();
+			const FVector2D AbsPos = MouseAbs;
+			FSlateApplication& Slate = FSlateApplication::Get();
+			Slate.ProcessMouseMoveEvent(FPointerEvent(0, AbsPos, AbsPos, TSet<FKey>(), FKey(), 0.f, FModifierKeysState()), /*bIsSynthetic*/ true);
+			const TSet<FKey> Pressed({ Mouse });
+			const FPointerEvent DownEv(0, AbsPos, AbsPos, Pressed, Mouse, 0.f, FModifierKeysState());
+			const FPointerEvent UpEv(0, AbsPos, AbsPos, TSet<FKey>(), Mouse, 0.f, FModifierKeysState());
+			if (Event != TEXT("release")) { Sent->SetBoolField(TEXT("handled"), Slate.ProcessMouseButtonDownEvent(Native, DownEv)); }
+			if (Event == TEXT("press")) { Finish(); return; }
+			if (Event == TEXT("release")) { Sent->SetBoolField(TEXT("handled"), Slate.ProcessMouseButtonUpEvent(UpEv)); Finish(); return; }
+			EW::PollUntil(Hold, []() { return false; }, [UpEv, Finish]()
+			{
+				FSlateApplication::Get().ProcessMouseButtonUpEvent(UpEv);
+				Finish();
+			});
 		});
 
 	R.Register(TEXT("ui_open"),
