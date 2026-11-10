@@ -145,7 +145,7 @@ The client sees three meta tools: `search` (find a tool in plain words), `descri
 The `viewmodel_*` tools edit the view models and view bindings of a Widget Blueprint (Epic's UMG Viewmodel plugin). Their code lives in a second plugin, `Plugins/EnginewrightMVVM`, so Enginewright itself loads and works in a project that does not use MVVM, and it never turns the MVVM plugin on for you.
 
 - Without it the tools are still listed, and answer `MVVM_NOT_ENABLED` with the steps below.
-- To use them: copy `Plugins/EnginewrightMVVM` next to `Plugins/Enginewright`, then enable `EnginewrightMVVM` (it enables `ModelViewViewModel`) in Edit > Plugins or in the `Plugins` list of the `.uproject`, and restart the editor. A C++ project builds it with the rest.
+- To use them: unzip `EnginewrightMVVM-<version>-UE5.8-Win64.zip` from the release (or copy `Plugins/EnginewrightMVVM` from this repo) next to `Plugins/Enginewright`, then enable `EnginewrightMVVM` (it enables `ModelViewViewModel`) in Edit > Plugins or in the `Plugins` list of the `.uproject`, and restart the editor. A C++ project builds it with the rest.
 
 ### Optional: compiling while the editor is closed
 
