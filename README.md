@@ -23,7 +23,13 @@ An Unreal Engine editor plugin that runs a [Model Context Protocol](https://mode
 - MVVM: `viewmodel_*` tools edit view models and bindings, in an optional plugin.
 - Reliability sweep: every tool was run on a real game project (RagnaCook) with 11 fixes, see [docs/RELIABILITY_0.4.md](docs/RELIABILITY_0.4.md).
 
-<!-- WHATS_NEW_MEDIA -->
+![actor_preview: the same actor class with BeginPlay off and on, photographed without Play In Editor and put side by side by image_compose](docs/media/actor-preview.png)
+
+*Above: `actor_preview` builds an actor class like the game does (constructor, then BeginPlay and a few ticks) in a preview world and photographs it. Left: constructor only. Right: after BeginPlay the actor placed its own props. No Play In Editor, nothing left in the level.*
+
+The panel now shows the version, with buttons to the roadmap and the changelog on GitHub:
+
+![Enginewright panel 0.4.0 with the What's new / Roadmap and Changelog buttons](docs/media/panel.png)
 
 Full notes: [v0.4.0 release notes](docs/release-notes/v0.4.0.md).
 
