@@ -451,7 +451,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 			"translation":{"type":"string","description":"Translated String Table to check against the source."},
 			"po":{"type":"string","description":"Translated .po file (e.g. Content/Localization/Game/tr/Game.po)."},
 			"locres":{"type":"string","description":"Compiled .locres file (e.g. Content/Localization/Game/tr/Game.locres)."},
-			"namespace":{"type":"string","description":"Namespace of the entries in the po/locres file. Default: the namespace of the source String Table. '*' = any namespace."},
+			"namespace":{"type":"string","description":"Namespace of the entries in the po/locres file. Default: the namespace of the source String Table, or the CSV file name for sourceCsv. '*' = any namespace."},
 			"ignoreSame":{"type":"array","items":{"type":"string"},"description":"Key wildcards allowed to equal the source (names, numbers)."},
 			"limit":{"type":"integer","description":"Max listed per category, default 100."}}})"),
 		false,
@@ -489,12 +489,17 @@ void RegisterLocalizationTools(FEWRegistry& R)
 				if (!Csv->ImportStringsFromCSVString(Text, *Path)) { return Bad(TEXT("INVALID_FILE"), FString::Printf(TEXT("sourceCsv: '%s' is not a String Table CSV (needs Key and SourceString columns)."), *Path)); }
 				Csv->EnumerateSourceStrings([&](const FString& K, const FString& V) { Src.Add(K, V); SrcOrder.Add(K); return true; });
 				SourceName = Path;
+				SrcNamespace = FPaths::GetBaseFilename(Path);   // a CSV table loaded with LOCTABLE_FROMFILE usually takes the file name as its namespace
 			}
 
 			// Translation: key -> entry.
 			TMap<FString, FTransEntry> Tr;
 			FString TransName, Kind;
 			TArray<FString> Notes;
+			FString NsUsed;       // namespace the po/locres entries were read from ('*' = any)
+			bool bNsUsed = false;
+			bool bNsAny = false;  // the namespace argument was '*'
+			TMap<FString, int32> NsSourceCounts; // per namespace: how many of the source keys it has entries for
 			if (!TransArg.IsEmpty())
 			{
 				FStringTableConstPtr T = FindTable(TransArg, TId, Err, Sug);
@@ -509,9 +514,20 @@ void RegisterLocalizationTools(FEWRegistry& R)
 				const FString Path = ResolveFile(PoArg.IsEmpty() ? LocresArg : PoArg);
 				if (!IFileManager::Get().FileExists(*Path)) { return Bad(TEXT("FILE_NOT_FOUND"), FString::Printf(TEXT("'%s' does not exist."), *Path)); }
 				const FString NsArg = Args->HasField(TEXT("namespace")) ? EW::Str(Args, TEXT("namespace")) : SrcNamespace;
+				NsUsed = NsArg;
+				bNsUsed = true;
 				const bool bAnyNs = NsArg == TEXT("*");
+				bNsAny = bAnyNs;
 				TMap<FString, FTransEntry> Any;      // every namespace, first entry of a key wins
 				TMap<FString, FTransEntry> InNs;     // only NsArg
+				TSet<FString> CountedNsKeys;         // "namespace<US>key", counted once even when a po lists an entry twice
+				auto CountNsKey = [&Src, &NsSourceCounts, &CountedNsKeys](const FString& Ns, const FString& Key)
+				{
+					FString Id = Ns;
+					Id += TEXT('\x1F');
+					Id += Key;
+					if (Src.Contains(Key) && !CountedNsKeys.Contains(Id)) { CountedNsKeys.Add(Id); ++NsSourceCounts.FindOrAdd(Ns); }
+				};
 				int32 NoContext = 0, Total = 0;
 				if (!PoArg.IsEmpty())
 				{
@@ -529,6 +545,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 						FTransEntry E; E.Str = It.Str; E.PoSource = It.Id; E.bHasPoSource = true; E.bFuzzy = It.bFuzzy;
 						if (!Any.Contains(Key)) { Any.Add(Key, E); }
 						if (Ns == NsArg && !InNs.Contains(Key)) { InNs.Add(Key, E); }
+						CountNsKey(Ns, Key);
 					}
 					Kind = TEXT("po");
 				}
@@ -546,6 +563,7 @@ void RegisterLocalizationTools(FEWRegistry& R)
 						FTransEntry E; E.Str = KV.Value.LocalizedString.IsValid() ? *KV.Value.LocalizedString : FString(); E.bHasHash = true; E.Hash = KV.Value.SourceStringHash;
 						if (!Any.Contains(Key)) { Any.Add(Key, E); }
 						if (Ns == NsArg && !InNs.Contains(Key)) { InNs.Add(Key, E); }
+						CountNsKey(Ns, Key);
 					}
 					Kind = TEXT("locres");
 				}
@@ -591,10 +609,25 @@ void RegisterLocalizationTools(FEWRegistry& R)
 			}
 			for (const TPair<FString, FTransEntry>& KV : Tr) { if (!Src.Contains(FString(*KV.Key))) { Add(Extra, NExtra, Entry(FString(*KV.Key), KV.Value.Str)); } }
 
+			// The namespace guess was clearly wrong: most keys are missing and the file has them under other namespaces.
+			if (bNsUsed && !bNsAny && NMissing * 2 > SrcOrder.Num())
+			{
+				TArray<TPair<FString, int32>> Rank;
+				for (const TPair<FString, int32>& KV : NsSourceCounts)
+				{
+					if (KV.Key != NsUsed) { Rank.Emplace(KV.Key, KV.Value); }
+				}
+				Rank.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B) { return A.Value > B.Value; });
+				TArray<FString> Where;
+				for (int32 i = 0; i < Rank.Num() && i < 3; ++i) { Where.Add(FString::Printf(TEXT("%s (%d keys)"), *Rank[i].Key, Rank[i].Value)); }
+				if (Where.Num()) { Notes.Add(FString::Printf(TEXT("Most source keys are missing in namespace '%s'. The file has them in: %s. Pass namespace."), *NsUsed, *FString::Join(Where, TEXT(", ")))); }
+			}
+
 			TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
 			Data->SetStringField(TEXT("source"), SourceName);
 			Data->SetStringField(TEXT("translation"), TransName);
 			Data->SetStringField(TEXT("translationKind"), Kind);
+			if (bNsUsed) { Data->SetStringField(TEXT("namespace"), NsUsed); }
 			Data->SetNumberField(TEXT("sourceEntries"), Src.Num());
 			Data->SetNumberField(TEXT("translationEntries"), Tr.Num());
 			TSharedRef<FJsonObject> Counts = MakeShared<FJsonObject>();

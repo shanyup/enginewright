@@ -156,11 +156,95 @@ check("po: escaped quotes and a msgstr on continuation lines are read whole; CSV
       mf.get("Multi", {}).get("translation") == 'O dedi ki "merhaba", {1}' and mf.get("Multi", {}).get("source") == 'He said "hi", {0}', mf)
 check("CSV source: rich text tags match (Hint has no format difference)", "Hint" not in mf, mf)
 r = c("stringtable_compare", {"sourceCsv": str(CSV), "po": str(PO)})
-check("source without a namespace (CSV): keys are matched in any namespace, no warning", r["ok"] and not r.get("warnings") and r["data"]["translationEntries"] == 7, r)
+check("source without a namespace (CSV): the CSV file name is the default namespace, the po has no 'Source' namespace -> matched in any namespace, with a note",
+      r["ok"] and r["data"]["translationEntries"] == 7 and r["data"].get("namespace") == "Source"
+      and any("keys were matched in any namespace" in w for w in r.get("warnings", [])), r)
 r = c("stringtable_compare", {"sourceCsv": str(CSV), "po": str(PO), "namespace": "Nope"})
 check("namespace not found in the po -> compared across namespaces, with a warning", r["ok"] and r.get("warnings") and r["data"]["translationEntries"] == 7, r)
 r = c("stringtable_compare", {"sourceCsv": str(CSV), "po": str(PO), "namespace": "*"})
 check("namespace * = any namespace (first entry of a key wins)", r["ok"] and r["data"]["translationEntries"] == 7 and not r.get("warnings"), r)
+
+# slice H3: CSV source picks the CSV file name as the default namespace; a wrong namespace warns where the keys are
+CSVNS = LOC / "ST_EWNs.csv"
+CSVNS.write_text("Key,SourceString\nA,Apple\nB,Bread\n", encoding="utf-8")
+PONS = LOC / "NsGuid.po"
+PONS.write_text('''msgid ""
+msgstr ""
+"Language: tr\\n"
+
+#. Key:\\tGUID1
+msgctxt ",GUID1"
+msgid "Other"
+msgstr "Diğe\\u0301r"
+
+#. Key:\\tA
+msgctxt "ST_EWNs,A"
+msgid "Apple"
+msgstr "Elma"
+
+#. Key:\\tB
+msgctxt "ST_EWNs,B"
+msgid "Bread"
+msgstr "Ekmek"
+''', encoding="utf-8")
+r = c("stringtable_compare", {"sourceCsv": str(CSVNS), "po": str(PONS)})
+d = r.get("data") or {}
+cn = d.get("counts", {})
+check("CSV source without namespace: the CSV file name (ST_EWNs) is the namespace used, every key found",
+      r["ok"] and d.get("namespace") == "ST_EWNs" and cn.get("missing") == 0 and d.get("translationEntries") == 2
+      and cn.get("extra") == 1, r)
+check("the po's empty-namespace GUID entry did not hijack the namespace (no warnings)", r["ok"] and not r.get("warnings"), r)
+PONS2 = LOC / "NsOther.po"
+PONS2.write_text('''msgid ""
+msgstr ""
+"Language: tr\\n"
+
+#. Key:\\tGUID1
+msgctxt ",GUID1"
+msgid "Other"
+msgstr "Diğe\\u0301r"
+
+#. Key:\\tA
+msgctxt "Other,A"
+msgid "Apple"
+msgstr "Elma"
+
+#. Key:\\tB
+msgctxt "Other,B"
+msgid "Bread"
+msgstr "Ekmek"
+''', encoding="utf-8")
+r = c("stringtable_compare", {"sourceCsv": str(CSVNS), "po": str(PONS2)})
+d = r.get("data") or {}
+check("CSV name namespace has no entries -> fell back to any-namespace matching, nothing missing, note explains",
+      r["ok"] and d.get("namespace") == "ST_EWNs" and d["counts"].get("missing") == 0
+      and any("No entry in namespace 'ST_EWNs'" in w and "any namespace" in w for w in r.get("warnings", [])), r)
+
+
+def multi_ns_locres(path, by_ns):
+    """Multiple namespaces in one legacy .locres, same layout legacy_locres writes."""
+    body = struct.pack("<I", len(by_ns))
+    for ns, ents in by_ns.items():
+        body += fstr(ns) + struct.pack("<I", len(ents))
+        for k, (src, loc) in ents.items():
+            body += fstr(k) + struct.pack("<I", crc32_ue(src)) + fstr(loc)
+    path.write_bytes(body)
+
+
+WEIRD = LOC / "MostMissing.locres"
+multi_ns_locres(WEIRD, {"ST_EWNs2": {"A": ("Apple", "Elma")}, "Other": {"B": ("Bread", "Ekmek"), "C": ("Cake", "Kek")}})
+CSVW = LOC / "ST_EWNs2.csv"
+CSVW.write_text("Key,SourceString\nA,Apple\nB,Bread\nC,Cake\n", encoding="utf-8")
+r = c("stringtable_compare", {"sourceCsv": str(CSVW), "locres": str(WEIRD)})
+d = r.get("data") or {}
+check("locres: more than half the source keys missing in the default namespace -> a warning lists where the keys are",
+      r["ok"] and d.get("namespace") == "ST_EWNs2" and d["counts"].get("missing") == 2 and d["counts"].get("extra") == 0
+      and any(w.startswith("Most source keys are missing in namespace 'ST_EWNs2'") and "The file has them in: Other (2 keys)" in w
+              and w.rstrip().endswith("Pass namespace.") for w in r.get("warnings", [])), r.get("warnings"))
+r = c("stringtable_compare", {"sourceCsv": str(CSVW), "locres": str(WEIRD), "namespace": "*"})
+d = r.get("data") or {}
+check("the most-missing warning is skipped for namespace *", r["ok"] and d["counts"].get("missing") == 0
+      and all("Most source keys" not in w for w in r.get("warnings", [])), r["warnings"])
 
 LR = LOC / "Game.locres"
 legacy_locres(LR, "EWTest", {"Menu.Play": ("Play!", "Oyna"), "Menu.Quit": ("Quit", "Çıkış"), "Gold": ("Gold", "{0} altın")})
