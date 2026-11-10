@@ -132,6 +132,8 @@ void RegisterBuildTools(FEWRegistry& R)
 			{
 				Bat += FString::Printf(TEXT("echo EW_SKIPPED no build >> \"%s\"\r\n"), *BuildLog());
 			}
+			// Autosave leftovers of a discarded session make the next start show a modal "Restore Packages" dialog that blocks every test.
+			if (EW::Bool(Args, TEXT("discardUnsaved"), false)) { Bat += FString::Printf(TEXT("rd /s /q \"%s\" 2>nul\r\n"), *(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()) / TEXT("Autosaves")).Replace(TEXT("/"), TEXT("\\"))); }
 			if (bReopen) { Bat += FString::Printf(TEXT("start \"\" \"%s\" \"%s\"\r\n"), *Editor.Replace(TEXT("/"), TEXT("\\")), *Project.Replace(TEXT("/"), TEXT("\\"))); }
 			const FString BatFile = BuildDir() / TEXT("restart.bat");
 			if (!FFileHelper::SaveStringToFile(Bat, *BatFile)) { return FEWResult::Error(TEXT("WRITE_FAILED"), TEXT("Could not write the restart script.")); }

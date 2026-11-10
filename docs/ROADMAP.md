@@ -58,6 +58,8 @@ Requests from localizing a real game (English source, Turkish translation). Done
 - Done: `asset_delete` says why an asset cannot be deleted (ER-14): the referencing asset or package, an open editor, unsaved changes; `DELETE_INCOMPLETE` carries a `reason` per asset; the tool text explains `force`.
 - Done: `mesh_info` returns local bounds (min, max, center), size and the pivot offsets (from the bounds center and from the base) without spawning an actor (ER-16).
 - Done: `blueprint_set_component_defaults` writes defaults of a component inherited from a C++ parent (or an SCS component); `blueprint_info` lists inherited components; `asset_import` takes `scale` (one number or xyz), `rotation`, `translation`, `meshType` for static and skeletal meshes (ER-18).
+- Done: `game_run` `shotNames` (ER-20): the run ends with PASSED / `SHOTS_DONE` when each named screenshot (a file name part) is written, `SHOTS_MISSING` when the game ends without one; the tool text spells out the long-run pattern (short `wait`, `STILL_RUNNING`, `game_run_status` loop, two resolutions). `shotsFound` counted a shot copied from another folder twice (ER-09); it now counts each PNG once.
+- Done: `image_stats` (ER-19): mean luma, luma histogram (16 bins), saturation, clipped black / white and, with `reference`, the brightness difference, mean absolute pixel difference, changed pixels and SSIM. `game_run` `cvars` (console variables sent as `-ExecCmds`, unknown names refused) and `variants` (the same run once per look, each screenshot with its stats and the diff to the first variant); the tool text lists the scene exposure cvars of UE 5.8.
 
 ## v0.5: what the RagnaCook demo still needs
 

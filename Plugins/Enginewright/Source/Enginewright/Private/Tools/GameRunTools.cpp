@@ -3,6 +3,7 @@
 // and collect the PNG files it wrote (ER-02). Runs inside the editor without blocking it; no Python.
 #include "EnginewrightTool.h"
 #include "EWCommon.h"
+#include "EWImageStats.h"
 
 #include "Components/SkyLightComponent.h"
 #include "Containers/Ticker.h"
@@ -102,10 +103,21 @@ namespace
 		return true;
 	}
 
+	using FCvarList = TArray<TPair<FString, FString>>; // name, value as the console takes it
+
+	struct FRunVariant
+	{
+		FString Label;
+		FCvarList Cvars;
+	};
+
 	struct FRunSpec
 	{
 		FString Url, Exe, Out, Done, Require, Culture;
 		TArray<FString> ExeArgs, Args, Filters, PassText, FailText, ShotDirs;
+		TArray<FString> ShotNames; // ER-20: file name parts; the run is over when each one has a new PNG
+		FCvarList Cvars;           // ER-19: console variables for every run
+		TArray<FRunVariant> Variants; // ER-19: one run per variant (and resolution), with the variant's cvars on top of Cvars
 		TArray<FIntPoint> Resolutions; // empty = one run at the default size
 		bool bFullscreen = false, bUnattended = true, bPauseViewports = true;
 		int32 ShotsExpected = 0; // 0 = off; else the run is over when this many new PNG files exist
@@ -152,6 +164,80 @@ namespace
 		struct FWaiter { double Deadline; FEWDone Done; };
 		TArray<FWaiter> Waiters;
 	};
+
+	int32 ResCount(const FRunSpec& S) { return FMath::Max(1, S.Resolutions.Num()); }
+	int32 TotalRuns(const FRunSpec& S) { return ResCount(S) * FMath::Max(1, S.Variants.Num()); }
+	/** Run Index goes through the resolutions first, then the next variant. */
+	const FIntPoint* ResOf(const FRunSpec& S, int32 Index) { return S.Resolutions.IsValidIndex(Index % ResCount(S)) ? &S.Resolutions[Index % ResCount(S)] : nullptr; }
+	const FRunVariant* VariantOf(const FRunSpec& S, int32 Index) { return S.Variants.IsValidIndex(Index / ResCount(S)) ? &S.Variants[Index / ResCount(S)] : nullptr; }
+
+	/** Base cvars with the variant's values on top (same name = the variant wins). */
+	FCvarList EffectiveCvars(const FRunSpec& S, const FRunVariant* V)
+	{
+		FCvarList Out = S.Cvars;
+		if (V)
+		{
+			for (const TPair<FString, FString>& P : V->Cvars)
+			{
+				bool bFound = false;
+				for (TPair<FString, FString>& O : Out) { if (O.Key.Equals(P.Key, ESearchCase::IgnoreCase)) { O.Value = P.Value; bFound = true; break; } }
+				if (!bFound) { Out.Add(P); }
+			}
+		}
+		return Out;
+	}
+
+	/** Reads {"r.Foo": 1, "r.Bar": "x", "r.Baz": true}; values must not contain a comma or quote (the console list separator). */
+	bool ParseCvars(const TSharedPtr<FJsonObject>& Obj, FCvarList& Out, FString& Error)
+	{
+		for (const auto& KV : Obj->Values)
+		{
+			FString Name = FString(KV.Key).TrimStartAndEnd(), Value;
+			if (Name.IsEmpty() || Name.Contains(TEXT(" ")) || Name.Contains(TEXT(",")) || Name.Contains(TEXT("\"")))
+			{
+				Error = FString::Printf(TEXT("'%s' is not a console variable name (letters, digits, '.', '_')."), *KV.Key);
+				return false;
+			}
+			double N = 0; bool B = false; FString S;
+			// decide by the JSON type: TryGetBool also "succeeds" on numbers and strings (nonzero -> true)
+			if (KV.Value->Type == EJson::Boolean && KV.Value->TryGetBool(B)) { Value = B ? TEXT("1") : TEXT("0"); }
+			else if (KV.Value->Type == EJson::Number && KV.Value->TryGetNumber(N)) { Value = FMath::IsNearlyEqual(N, FMath::RoundToDouble(N)) && FMath::Abs(N) < 1e9 ? FString::Printf(TEXT("%lld"), (int64)FMath::RoundToDouble(N)) : FString::SanitizeFloat(N); }
+			else if (KV.Value->TryGetString(S)) { Value = S.TrimStartAndEnd(); }
+			else { Error = FString::Printf(TEXT("The value of cvar '%s' must be a number, boolean or string."), *Name); return false; }
+			if (Value.IsEmpty() || Value.Contains(TEXT(",")) || Value.Contains(TEXT("\"")) || Value.Contains(TEXT("\n")))
+			{
+				Error = FString::Printf(TEXT("The value of cvar '%s' is empty or contains a comma, quote or line break."), *Name);
+				return false;
+			}
+			Out.Emplace(Name, Value);
+		}
+		return true;
+	}
+
+	/** True when a console variable of this name exists in this editor process; else Suggest gets close names. */
+	bool CvarExists(const FString& Name, TArray<FString>& Suggest)
+	{
+		if (IConsoleManager::Get().FindConsoleVariable(*Name)) { return true; }
+		FString Needle = Name;
+		int32 Dot;
+		if (Name.FindLastChar(TEXT('.'), Dot) && Dot + 1 < Name.Len()) { Needle = Name.Mid(Dot + 1); }
+		TArray<FString> Near;
+		auto Collect = [&Near](const FString& Part)
+		{
+			IConsoleManager::Get().ForEachConsoleObjectThatContains(FConsoleObjectVisitor::CreateLambda([&Near](const TCHAR* N, IConsoleObject* O) { if (O && O->AsVariable()) { Near.AddUnique(N); } }), *Part);
+		};
+		Collect(Needle);
+		if (Near.IsEmpty() && Needle.Len() > 6) { Collect(Needle.Left(6)); } // a typo later in the word
+		Suggest = EW::Suggest(Name, Near);
+		return false;
+	}
+
+	/** The new PNG file whose name contains Part (case-insensitive); empty when none. */
+	FString FindNamedShot(const TArray<FString>& Files, const FString& Part)
+	{
+		for (const FString& F : Files) { if (FPaths::GetCleanFilename(F).Contains(Part, ESearchCase::IgnoreCase)) { return F; } }
+		return FString();
+	}
 
 	TMap<FString, TSharedPtr<FGameRun>>& Runs()
 	{
@@ -200,14 +286,18 @@ namespace
 		V.Add(TEXT("w"), Res ? FString::FromInt(Res->X) : FString());
 		V.Add(TEXT("h"), Res ? FString::FromInt(Res->Y) : FString());
 		V.Add(TEXT("res"), R.Tag);
+		const FRunVariant* Var = VariantOf(R.S, R.Index);
+		V.Add(TEXT("variant"), Var ? Var->Label : FString());
 		return V;
 	}
 
 	/** Builds the command of run Index. Returns false with Error on a bad placeholder. */
 	bool PrepareRun(FGameRun& R, FString& Error)
 	{
-		const FIntPoint* Res = R.S.Resolutions.IsValidIndex(R.Index) ? &R.S.Resolutions[R.Index] : nullptr;
-		R.Tag = Res ? FString::Printf(TEXT("%dx%d"), Res->X, Res->Y) : FString(TEXT("default"));
+		const FIntPoint* Res = ResOf(R.S, R.Index);
+		const FRunVariant* Var = VariantOf(R.S, R.Index);
+		const FString ResTag = Res ? FString::Printf(TEXT("%dx%d"), Res->X, Res->Y) : FString(TEXT("default"));
+		R.Tag = Var ? (Res ? Var->Label + TEXT("_") + ResTag : Var->Label) : ResTag;
 		R.RunDir = R.S.Out / R.Tag;
 		R.ShotsDir = R.RunDir / TEXT("shots");
 		R.Log = R.RunDir / TEXT("game.log");
@@ -244,8 +334,32 @@ namespace
 			if (!FillPlaceholders(A, Vals, Filled, Error)) { return false; }
 			R.Command.Add(Filled);
 		}
+		// ER-19: console variables ride in -ExecCmds (merged with one the caller passed in args)
+		const FCvarList Cvars = EffectiveCvars(R.S, Var);
+		if (Cvars.Num())
+		{
+			TArray<FString> Cmds;
+			for (const TPair<FString, FString>& P : Cvars) { Cmds.Add(P.Key + TEXT(" ") + P.Value); }
+			const FString Joined = FString::Join(Cmds, TEXT(","));
+			int32 Exec = INDEX_NONE;
+			for (int32 i = 1; i < R.Command.Num(); ++i) { if (R.Command[i].StartsWith(TEXT("-ExecCmds="), ESearchCase::IgnoreCase)) { Exec = i; } }
+			if (Exec != INDEX_NONE)
+			{
+				FString Existing = R.Command[Exec].Mid(10).TrimStartAndEnd();
+				if (Existing.Len() >= 2 && Existing.StartsWith(TEXT("\"")) && Existing.EndsWith(TEXT("\""))) { Existing = Existing.Mid(1, Existing.Len() - 2); }
+				R.Command[Exec] = TEXT("-ExecCmds=") + Joined + (Existing.IsEmpty() ? FString() : TEXT(",") + Existing);
+			}
+			else { R.Command.Add(TEXT("-ExecCmds=") + Joined); }
+		}
 		R.Cur = MakeShared<FJsonObject>();
 		R.Cur->SetStringField(TEXT("res"), R.Tag);
+		if (Var) { R.Cur->SetStringField(TEXT("variant"), Var->Label); }
+		if (Cvars.Num())
+		{
+			TSharedRef<FJsonObject> CJ = MakeShared<FJsonObject>();
+			for (const TPair<FString, FString>& P : Cvars) { CJ->SetStringField(P.Key, P.Value); }
+			R.Cur->SetObjectField(TEXT("cvars"), CJ);
+		}
 		R.Cur->SetArrayField(TEXT("command"), JStrings(R.Command, MAX_int32, 4000));
 		R.Cur->SetStringField(TEXT("log"), Fwd(R.Log));
 		R.Cur->SetStringField(TEXT("url"), R.UrlFilled);
@@ -298,11 +412,12 @@ namespace
 		return Dirs;
 	}
 
-	/** Counts the PNG files written since this run started (no copying) and their total size. */
-	int32 CountNewPngs(const FGameRun& R, const FIntPoint* Res, int64& OutBytes)
+	/** The PNG files written since this run started (no copying) and their total size. Each file once. */
+	TArray<FString> NewPngFiles(const FGameRun& R, const FIntPoint* Res, int64& OutBytes)
 	{
 		OutBytes = 0;
 		TSet<FString> Seen;
+		TArray<FString> Files;
 		for (const FString& D : ShotSearchDirs(R, Res))
 		{
 			if (!IFileManager::Get().DirectoryExists(*D)) { continue; }
@@ -313,10 +428,19 @@ namespace
 				const FString F = Fwd(FPaths::ConvertRelativePathToFull(F0));
 				if (Seen.Contains(F) || IFileManager::Get().GetTimeStamp(*F) < R.T0Utc - FTimespan::FromSeconds(1)) { continue; }
 				Seen.Add(F);
+				Files.Add(F);
 				OutBytes += FMath::Max<int64>(0, IFileManager::Get().FileSize(*F));
 			}
 		}
-		return Seen.Num();
+		return Files;
+	}
+
+	/** Names of ShotNames that have no new PNG yet. */
+	TArray<FString> MissingShotNames(const FGameRun& R, const TArray<FString>& Files)
+	{
+		TArray<FString> Missing;
+		for (const FString& N : R.S.ShotNames) { if (FindNamedShot(Files, N).IsEmpty()) { Missing.Add(N); } }
+		return Missing;
 	}
 
 	TArray<TSharedPtr<FJsonValue>> CollectPngs(const FGameRun& R, const FIntPoint* Res)
@@ -445,6 +569,12 @@ namespace
 			if (bP) { Passes.Add(L); }
 			if (bC) { Crash.Add(L); }
 		}
+		// ER-09/ER-20: look at the PNG files before CollectPngs copies shots from other folders into the run folder
+		// (counting after the copy counted such a shot twice: shotsFound 2 with one PNG in the list).
+		const FIntPoint* Res = ResOf(R.S, R.Index);
+		int64 ShotBytes = 0;
+		const TArray<FString> NewFiles = NewPngFiles(R, Res, ShotBytes);
+		const TArray<FString> MissingNames = MissingShotNames(R, NewFiles);
 		FString Verdict;
 		if (R.StopReason == TEXT("URL_MISMATCH") || R.StopReason == TEXT("URL_NOT_CONFIRMED") || R.StopReason == TEXT("REQUIRED_LINE_MISSING") || R.StopReason == TEXT("STOPPED")) { Verdict = R.StopReason; }
 		else if (Fails.Num()) { Verdict = TEXT("FAILED"); }
@@ -452,7 +582,7 @@ namespace
 		else if (R.StopReason == TEXT("SHOTS_DONE") && R.Pass.Num() == 0) { Verdict = TEXT("PASSED"); } // the expected screenshots are the result
 		else if (R.Pass.Num()) { Verdict = Passes.Num() ? TEXT("PASSED") : (bTimedOut ? TEXT("TIMEOUT") : TEXT("NO_VERDICT")); }
 		else { Verdict = bTimedOut ? TEXT("TIMEOUT") : (ExitCode == 0 ? TEXT("EXITED_OK") : TEXT("EXIT_CODE")); }
-		const FIntPoint* Res = R.S.Resolutions.IsValidIndex(R.Index) ? &R.S.Resolutions[R.Index] : nullptr;
+		if (MissingNames.Num() && (Verdict == TEXT("PASSED") || Verdict == TEXT("EXITED_OK"))) { Verdict = TEXT("SHOTS_MISSING"); } // the game ended without the named shots
 		TSharedPtr<FJsonObject> C = R.Cur;
 		C->SetStringField(TEXT("verdict"), Verdict);
 		if (bExited) { C->SetNumberField(TEXT("exitCode"), ExitCode); } else { C->SetField(TEXT("exitCode"), MakeShared<FJsonValueNull>()); }
@@ -475,11 +605,61 @@ namespace
 		C->SetArrayField(TEXT("failLines"), JStrings(Fails, 50));
 		C->SetArrayField(TEXT("crashLines"), JStrings(Crash, 20));
 		C->SetArrayField(TEXT("screenshots"), CollectPngs(R, Res));
-		if (R.S.ShotsExpected > 0)
+		if (R.S.ShotsExpected > 0 || R.S.ShotNames.Num() > 0)
 		{
-			int64 Bytes = 0;
-			C->SetNumberField(TEXT("shotsExpected"), R.S.ShotsExpected);
-			C->SetNumberField(TEXT("shotsFound"), CountNewPngs(R, Res, Bytes));
+			if (R.S.ShotsExpected > 0) { C->SetNumberField(TEXT("shotsExpected"), R.S.ShotsExpected); }
+			C->SetNumberField(TEXT("shotsFound"), NewFiles.Num());
+		}
+		if (R.S.ShotNames.Num() > 0)
+		{
+			TSharedRef<FJsonObject> Named = MakeShared<FJsonObject>();
+			for (const FString& N : R.S.ShotNames)
+			{
+				const FString F = FindNamedShot(NewFiles, N);
+				if (F.IsEmpty()) { Named->SetField(N, MakeShared<FJsonValueNull>()); } else { Named->SetStringField(N, FPaths::GetCleanFilename(F)); }
+			}
+			C->SetObjectField(TEXT("shotNames"), Named);
+			C->SetArrayField(TEXT("shotsMissing"), JStrings(MissingNames));
+		}
+		// ER-19: numbers for every screenshot of a variant run, and the change against the first variant's same file
+		if (R.S.Variants.Num() > 0)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Shots = nullptr;
+			C->TryGetArrayField(TEXT("screenshots"), Shots);
+			const int32 VarIdx = R.Index / ResCount(R.S);
+			const int32 FirstIdx = R.Index % ResCount(R.S);
+			const TArray<TSharedPtr<FJsonValue>>* FirstShots = nullptr;
+			if (VarIdx > 0 && R.Runs.IsValidIndex(FirstIdx)) { R.Runs[FirstIdx]->AsObject()->TryGetArrayField(TEXT("screenshots"), FirstShots); }
+			double SumLuma = 0; int32 NLuma = 0;
+			for (const TSharedPtr<FJsonValue>& SV : Shots ? *Shots : TArray<TSharedPtr<FJsonValue>>())
+			{
+				const TSharedPtr<FJsonObject> Item = SV->AsObject();
+				FString Path;
+				if (!Item->TryGetStringField(TEXT("path"), Path) || Item->HasField(TEXT("error"))) { continue; }
+				EW::FPngImage Img;
+				FString Err;
+				if (!EW::DecodePng(Path, Img, Err)) { Item->SetStringField(TEXT("statsError"), Err); continue; }
+				TSharedRef<FJsonObject> Stats = EW::ImageStatsJson(Img, EW::FImageRegion(), nullptr);
+				if (FirstShots) // same resolution, same file name in the first variant's run
+				{
+					for (const TSharedPtr<FJsonValue>& FV : *FirstShots)
+					{
+						FString FP;
+						if (!FV->AsObject()->TryGetStringField(TEXT("path"), FP) || FPaths::GetCleanFilename(FP) != FPaths::GetCleanFilename(Path)) { continue; }
+						EW::FPngImage RefImg;
+						if (EW::DecodePng(FP, RefImg, Err) && RefImg.W == Img.W && RefImg.H == Img.H)
+						{
+							Stats = EW::ImageStatsJson(Img, EW::FImageRegion(), &RefImg);
+							Item->SetStringField(TEXT("diffAgainst"), FP);
+						}
+						break;
+					}
+				}
+				double L = 0; Stats->TryGetNumberField(TEXT("meanLuma"), L);
+				SumLuma += L; ++NLuma;
+				Item->SetObjectField(TEXT("stats"), Stats);
+			}
+			if (NLuma > 0) { C->SetNumberField(TEXT("meanLuma"), FMath::RoundToDouble(SumLuma / NLuma * 1000) / 1000); }
 		}
 		if (R.Text.TrimStartAndEnd().IsEmpty()) { C->SetStringField(TEXT("warning"), TEXT("the game wrote no log; check the command (wrong exe/project?)")); }
 		R.Runs.Add(MakeShared<FJsonValueObject>(C.ToSharedRef()));
@@ -518,7 +698,7 @@ namespace
 		D->SetStringField(TEXT("state"), TEXT("running"));
 		D->SetStringField(TEXT("current"), R.Tag);
 		D->SetNumberField(TEXT("finishedRuns"), R.Runs.Num());
-		D->SetNumberField(TEXT("totalRuns"), FMath::Max(1, R.S.Resolutions.Num()));
+		D->SetNumberField(TEXT("totalRuns"), TotalRuns(R.S));
 		D->SetNumberField(TEXT("seconds"), FMath::RoundToInt(FPlatformTime::Seconds() - R.Started));
 		D->SetStringField(TEXT("out"), Fwd(R.S.Out));
 		FEWResult Res = FEWResult::Error(TEXT("STILL_RUNNING"),
@@ -594,22 +774,24 @@ namespace
 		if (R.StopReason.IsEmpty() && !R.UrlOk.IsSet() && Age > R.S.UrlCheckTimeout) { R.StopReason = TEXT("URL_NOT_CONFIRMED"); }
 		if (R.StopReason.IsEmpty() && R.RequireRe.IsSet() && !R.bRequireSeen && Age > R.S.RequireWithin) { R.StopReason = TEXT("REQUIRED_LINE_MISSING"); }
 		if (R.StopReason.IsEmpty() && R.DoneAt >= 0 && !bExited && Now - R.DoneAt > R.S.DoneGrace) { R.StopReason = TEXT("DONE_BUT_NOT_EXITED"); }
-		if (R.StopReason.IsEmpty() && R.S.ShotsExpected > 0 && !bExited && Now - R.LastShotCheck >= 1.0)
+		if (R.StopReason.IsEmpty() && (R.S.ShotsExpected > 0 || R.S.ShotNames.Num() > 0) && !bExited && Now - R.LastShotCheck >= 1.0)
 		{
-			// Enough new PNG files, and their total size did not change since the last check (the last one is written).
+			// Enough new PNG files (and every named shot there), and their total size did not change since the last check (the last one is written).
 			R.LastShotCheck = Now;
-			const FIntPoint* Res = R.S.Resolutions.IsValidIndex(R.Index) ? &R.S.Resolutions[R.Index] : nullptr;
+			const FIntPoint* Res = ResOf(R.S, R.Index);
 			int64 Bytes = 0;
-			R.ShotsFound = CountNewPngs(R, Res, Bytes);
-			if (R.ShotsFound >= R.S.ShotsExpected && Bytes > 0 && Bytes == R.ShotsBytes) { R.StopReason = TEXT("SHOTS_DONE"); }
-			R.ShotsBytes = R.ShotsFound >= R.S.ShotsExpected ? Bytes : -1;
+			const TArray<FString> Files = NewPngFiles(R, Res, Bytes);
+			R.ShotsFound = Files.Num();
+			const bool bEnough = Files.Num() >= R.S.ShotsExpected && MissingShotNames(R, Files).Num() == 0;
+			if (bEnough && Bytes > 0 && Bytes == R.ShotsBytes) { R.StopReason = TEXT("SHOTS_DONE"); }
+			R.ShotsBytes = bEnough ? Bytes : -1;
 		}
 		if (!(bExited || !R.StopReason.IsEmpty() || Age > R.S.Timeout)) { return; }
 		int32 Code = -1;
 		if (bExited) { FPlatformProcess::GetProcReturnCode(R.Proc, &Code); }
 		FinishCurrent(R, bExited, Code);
 		++R.Index;
-		if (R.Index >= FMath::Max(1, R.S.Resolutions.Num())) { Complete(R); }
+		if (R.Index >= TotalRuns(R.S)) { Complete(R); }
 	}
 
 	bool Tick(float)
@@ -794,7 +976,11 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 		TEXT("Start the game itself (UnrealEditor <project> <url> -game, or a packaged exe) once per resolution and report: did the URL arrive unchanged (checked in the game's own log), PASSED/FAILED from your patterns, the log lines you asked for, crash lines, and the new PNG files (screenshots) with their real size. ")
 		TEXT("Use it for self-tests and screenshot runs at several resolutions. The editor stays usable while the game runs. The game loads the C++ modules built on disk, not the editor's memory: after C++ changes rebuild with editor_restart {\"build\": true}. Live Coding patches only the open editor, so game_run refuses to start after a Live Coding patch (allowLiveCodingPatch overrides). ")
 		TEXT("While the game runs, the editor's realtime level viewports are paused (editorViewports) and a heavy editor level is reported. Screenshot runs (e.g. -ExecCmds=HighResShot) end with shotsExpected: the run is PASSED when that many new PNG files are written. ")
-		TEXT("The game is a separate process: loc_culture changes only the editor's language and does not reach it. Pass culture (e.g. tr) to start the game with -culture=tr. Each run reports glyphMisses: how often Slate logged 'Could not find Glyph Index' (a character the font cannot draw, shown as an empty box) with the first code points; font_coverage checks a font before the run. Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}. If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution)."),
+		TEXT("The game is a separate process: loc_culture changes only the editor's language and does not reach it. Pass culture (e.g. tr) to start the game with -culture=tr. Each run reports glyphMisses: how often Slate logged 'Could not find Glyph Index' (a character the font cannot draw, shown as an empty box) with the first code points; font_coverage checks a font before the run. Placeholders in url and args: {shots} (per-run folder for PNGs), {out}, {w}, {h}, {res}, {variant}. Output: <project>/Saved/Enginewright/runs/run-<time>/ (summary.json, game.log and shots per resolution). ")
+		TEXT(R"(NAMED SHOTS (shotNames): ["g2-deck","g3-end"] are file name parts (case-insensitive); the run ends with PASSED / stopReason SHOTS_DONE when each one has a new, fully written PNG, so the game is closed as soon as the shots you asked for exist (shots, without Names, only adds folders to search). The result lists shotNames {name: file or null} and shotsMissing; a game that ended without a named shot is SHOTS_MISSING. shotsFound counts each new PNG once. )")
+		TEXT(R"(LONG RUNS: agent tool calls are cut off after about 420 s, so never pass a long wait. Give wait 60-240 (or 0), and when the reply is the error STILL_RUNNING with data.id, the game keeps running: call game_run_status {"id":"<id>","wait":240} again and again until its state is finished (then it reports like game_run). Example, two resolutions (two game starts, so about twice the time of one): game_run {"url":"/Game/Maps/Shots?Shots={shots}","resolutions":["1920x1080","1280x720"],"shotNames":["menu","deck"],"timeout":900,"wait":120} -> STILL_RUNNING, id 20261110-013000 -> game_run_status {"id":"20261110-013000","wait":240} -> ... -> verdicts {1920x1080: PASSED, 1280x720: PASSED}. Only one game_run runs at a time (BUSY); stop one with game_run_status {"stop":true}. )")
+		TEXT(R"(LOOK TUNING (cvars, variants): cvars {"r.ExposureOffset":-1} sets console variables in the game process (sent as -ExecCmds, merged with an -ExecCmds you pass in args; each name must exist, else UNKNOWN_CVAR with close names; the run reports the applied values in runs[].cvars). variants [{"label":"dark","cvars":{...}},{"label":"bright","cvars":{...}}] runs the same game once per variant (and resolution) with that variant's cvars on top of cvars; every screenshot then carries stats (image_stats numbers; from the second variant on the diff against the first variant's file of the same name) and each run has meanLuma. Scene exposure cvars that exist in UE 5.8: r.DefaultFeature.AutoExposure (0 = fixed exposure, 1 = auto), r.DefaultFeature.AutoExposure.Bias, r.DefaultFeature.AutoExposure.Method (0 histogram, 1 basic), r.EyeAdaptation.MethodOverride (-1 none, 1 histogram, 2 basic, 3 manual), r.ExposureOffset (exposure in stops added on top; cheat variable, not in shipping builds), r.EyeAdaptationQuality, r.Tonemapper.Sharpen. Check any other name with console_command before relying on it. Example, two exposures: game_run {"url":"/Game/Maps/Shots?Shots={shots}","shotNames":["deck"],"variants":[{"label":"ev0","cvars":{"r.ExposureOffset":0}},{"label":"evminus2","cvars":{"r.ExposureOffset":-2}}]}. )")
+		TEXT("If the result is not ready within 'wait' seconds the reply is STILL_RUNNING with an id; the game keeps running: follow it with game_run_status."),
 		TEXT(R"({"type":"object","properties":{
 			"url":{"type":"string","description":"Map and options passed as one argument, unchanged, e.g. /Game/Maps/Test?SelfTest=Logic?Shots={shots}?Quit=1"},
 			"resolutions":{"type":"array","description":"Resolutions as \"WxH\" strings, one run each in order (e.g. [\"1920x1080\",\"1280x720\"]). Default: one run at the game's own size."},
@@ -817,6 +1003,9 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			"unattended":{"type":"boolean","description":"Pass -unattended (default true: no dialogs block the run)."},
 			"wait":{"type":"number","description":"Seconds to wait for the result before replying STILL_RUNNING (default 300; 0 = reply at once with the id)."},
 			"shotsExpected":{"type":"integer","description":"End the run when this many new PNG files exist (searched like the screenshots in the result) and are fully written; with no pass patterns the verdict is then PASSED (stopReason SHOTS_DONE). For screenshot runs whose game does not quit, e.g. -ExecCmds=HighResShot 1 with shotsExpected 1."},
+			"shotNames":{"type":"array","description":"File name parts of the screenshots you expect, e.g. ['g2-deck','g3-end'] (case-insensitive, matched on new PNG files): the run ends with PASSED / SHOTS_DONE when every name has a fully written PNG; a game that ends without one is SHOTS_MISSING. Not the same as shots (folders to search)."},
+			"cvars":{"type":"object","description":"Console variables for the game process, e.g. {'r.ExposureOffset':-1,'r.DefaultFeature.AutoExposure':0} (numbers, booleans or strings without commas). Sent as -ExecCmds; unknown names are refused (UNKNOWN_CVAR)."},
+			"variants":{"type":"array","description":"One run per variant (and resolution): [{'label':'dark','cvars':{'r.ExposureOffset':-2}},{'label':'bright','cvars':{'r.ExposureOffset':1}}]. label is optional (v1, v2, ...; letters, digits, - and _). Each screenshot of a variant run carries stats, the later variants also the diff to the first one."},
 			"culture":{"type":"string","description":"Culture the game starts with, e.g. tr or de-DE: adds -culture=<value> to the game arguments. loc_culture does not change the game process, only the editor."},
 			"editorViewports":{"type":"string","enum":["pause","keep"],"description":"pause (default): the editor's realtime level viewports stop rendering during the run and are restored after; keep: leave them."},
 			"allowLiveCodingPatch":{"type":"boolean","description":"Run even though Live Coding patched this editor (the game then runs the C++ code on disk, without the patch). Default false: refused with LIVE_CODING_PATCHED."},
@@ -887,6 +1076,90 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 				if (!P.IsSet()) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("Resolution must look like 1920x1080 (16-16384), got '%s'."), *T))); return; }
 				S.Resolutions.Add(P.GetValue());
 			}
+			// ER-20 shotNames
+			if (Args->HasField(TEXT("shotNames")))
+			{
+				S.ShotNames = EW::StrList(Args, TEXT("shotNames"));
+				for (FString& N : S.ShotNames) { N = N.TrimStartAndEnd(); }
+				if (S.ShotNames.IsEmpty() || S.ShotNames.Contains(FString()))
+				{
+					Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("shotNames needs at least one non-empty file name part, e.g. [\"g2-deck\"].")));
+					return;
+				}
+			}
+			// ER-19 cvars and variants
+			{
+				FString CvErr;
+				const TSharedPtr<FJsonObject>* CvObj = nullptr;
+				if (Args->HasField(TEXT("cvars")))
+				{
+					if (!Args->TryGetObjectField(TEXT("cvars"), CvObj) || !ParseCvars(*CvObj, S.Cvars, CvErr))
+					{
+						Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), CvErr.IsEmpty() ? TEXT("cvars must be an object {name: value}.") : CvErr));
+						return;
+					}
+				}
+				const TArray<TSharedPtr<FJsonValue>>* VarArr = nullptr;
+				if (Args->HasField(TEXT("variants")))
+				{
+					if (!Args->TryGetArrayField(TEXT("variants"), VarArr) || VarArr->Num() == 0)
+					{
+						Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), TEXT("variants must be a non-empty array of {label, cvars} objects.")));
+						return;
+					}
+					for (int32 i = 0; i < VarArr->Num(); ++i)
+					{
+						const TSharedPtr<FJsonObject>* VObj = nullptr;
+						if (!(*VarArr)[i]->TryGetObject(VObj))
+						{
+							Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("variants[%d] must be an object {label, cvars}."), i)));
+							return;
+						}
+						for (const auto& KV : (*VObj)->Values)
+						{
+							if (KV.Key != TEXT("label") && KV.Key != TEXT("cvars"))
+							{
+								Done(FEWResult::Error(TEXT("UNKNOWN_ARGUMENT"), FString::Printf(TEXT("variants[%d] has unknown key '%s'. Allowed: label, cvars."), i, *KV.Key), EW::Suggest(FString(KV.Key), TArray<FString>{ TEXT("label"), TEXT("cvars") })));
+								return;
+							}
+						}
+						FRunVariant V;
+						V.Label = EW::Str(*VObj, TEXT("label")).TrimStartAndEnd();
+						if (V.Label.IsEmpty()) { V.Label = FString::Printf(TEXT("v%d"), i + 1); }
+						for (TCHAR Ch : V.Label)
+						{
+							if (!FChar::IsAlnum(Ch) && Ch != TEXT('-') && Ch != TEXT('_'))
+							{
+								Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("variants[%d].label '%s' may only contain letters, digits, '-' and '_' (it names a folder)."), i, *V.Label)));
+								return;
+							}
+						}
+						for (const FRunVariant& Other : S.Variants)
+						{
+							if (Other.Label.Equals(V.Label, ESearchCase::IgnoreCase)) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("variants has the label '%s' twice."), *V.Label))); return; }
+						}
+						const TSharedPtr<FJsonObject>* VC = nullptr;
+						if (!(*VObj)->HasField(TEXT("cvars")) || !(*VObj)->TryGetObjectField(TEXT("cvars"), VC))
+						{
+							Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("variants[%d] needs 'cvars': an object {name: value} (may be empty for the unchanged look)."), i)));
+							return;
+						}
+						if (!ParseCvars(*VC, V.Cvars, CvErr)) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), FString::Printf(TEXT("variants[%d]: %s"), i, *CvErr))); return; }
+						S.Variants.Add(V);
+					}
+				}
+				// every named cvar must exist (the editor process loads the same modules as the game); a packaged exe may know more
+				TArray<FString> Names;
+				for (const TPair<FString, FString>& P : S.Cvars) { Names.AddUnique(P.Key); }
+				for (const FRunVariant& V : S.Variants) { for (const TPair<FString, FString>& P : V.Cvars) { Names.AddUnique(P.Key); } }
+				for (const FString& N : Names)
+				{
+					TArray<FString> Sug;
+					if (CvarExists(N, Sug)) { continue; }
+					if (S.Exe.IsEmpty()) { Done(FEWResult::Error(TEXT("UNKNOWN_CVAR"), FString::Printf(TEXT("'%s' is not a console variable in this project. Check the name with console_command."), *N), Sug)); return; }
+					R->Warnings.Add(FString::Printf(TEXT("Console variable '%s' is not known to the editor; it is passed to the packaged game as it is."), *N));
+				}
+			}
 			if (!S.Exe.IsEmpty())
 			{
 				S.Exe = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), S.Exe);
@@ -905,7 +1178,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 
 			// Check placeholders of every run before starting anything.
 			TArray<TSharedPtr<FJsonValue>> Planned;
-			for (R->Index = 0; R->Index < FMath::Max(1, S.Resolutions.Num()); ++R->Index)
+			for (R->Index = 0; R->Index < TotalRuns(S); ++R->Index)
 			{
 				FString Err;
 				if (!PrepareRun(*R, Err)) { Done(FEWResult::Error(TEXT("INVALID_ARGUMENT"), Err)); return; }
@@ -980,7 +1253,7 @@ void RegisterGameRunTools(FEWRegistry& Reg)
 			if (!R.bFinished && EW::Bool(Args, TEXT("stop"), false))
 			{
 				if (R.bProcStarted) { R.StopReason = TEXT("STOPPED"); FinishCurrent(R, false, -1); }
-				R.Index = FMath::Max(1, R.S.Resolutions.Num()); // skip the remaining resolutions
+				R.Index = TotalRuns(R.S); // skip the remaining runs
 				Complete(R);
 			}
 			if (R.bFinished) { Done(FinalResult(R)); return; }

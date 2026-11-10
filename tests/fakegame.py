@@ -5,7 +5,7 @@ The URL options choose what it does: Mode=pass|fail|hang|crash|passhang|shothang
 of the requested size there), Mangle=1 (logs a command line with the URL cut at the first '=', like a broken
 batch file), Code=<n> (exit code), Glyph=1 (logs Slate 'Could not find Glyph Index' warnings).
 """
-import os, sys, time
+import os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ewpng  # noqa: E402
@@ -45,11 +45,24 @@ if opt.get("Glyph"):
 if opt.get("Shots"):
     w, h = int(val("ResX") or 64), int(val("ResY") or 32)
     os.makedirs(opt["Shots"], exist_ok=True)
-    for i in range(int(opt.get("ShotCount", 1))):
+    # ER-19: brightness follows an "r.ExposureOffset <stops>" command of -ExecCmds, 20 grey levels per stop
+    pixel = b"\x10\x80\xf0\xff"
+    m = re.search(r"r\.ExposureOffset\s+(-?[0-9.]+)", val("ExecCmds") or "")
+    if m:
+        g = max(0, min(255, int(round(128 + 20 * float(m.group(1))))))
+        pixel = bytes((g, g, g, 255))
+    # ER-20: ShotNames=a,b,c writes <name>_<w>x<h>.png one after the other, ShotDelay seconds apart
+    if opt.get("ShotNames"):
+        for i, nm in enumerate(opt["ShotNames"].split(",")):
+            if i:
+                time.sleep(float(opt.get("ShotDelay", 0.7)))
+            ewpng.write_png(os.path.join(opt["Shots"], f"{nm}_{w}x{h}.png"), w, h, bytearray(pixel * (w * h)))
+            say(f"SELFTEST named shot {nm} saved")
+    for i in range(int(opt.get("ShotCount", 1)) if not opt.get("ShotNames") else 0):
         if i:
             time.sleep(0.7)
         name = f"shot_{w}x{h}.png" if i == 0 else f"shot_{w}x{h}_{i}.png"
-        ewpng.write_png(os.path.join(opt["Shots"], name), w, h, bytearray(b"\x10\x80\xf0\xff" * (w * h)))
+        ewpng.write_png(os.path.join(opt["Shots"], name), w, h, bytearray(pixel * (w * h)))
         say(f"SELFTEST shot {w}x{h} saved")
 if mode == "fail":
     say("SELFTEST Logic FAILED: expected 3 got 2")
